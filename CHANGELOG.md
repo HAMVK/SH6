@@ -2,6 +2,12 @@
 
 Milestone-style history for SH6, based on reviewing diffs between version bump commits.
 
+## v6.1.20 (2026-03-04)
+- Frequencies chart: redesign Y axis into per-band brackets, so each active band gets its own vertical lane.
+- Frequencies chart: map QSO dots by within-band frequency range (worked min/max with padding), reducing visual squashing when activity is concentrated (for example CW-only slices).
+- Frequencies compare mode: preserve shared-axis behavior by merging per-band worked ranges across logs when weekend keys align.
+- Version bump to `v6.1.20` and refresh cache-busting references in `index.html`.
+
 ## v6.1.19 (2026-02-26)
 - Compare layout audit: prevent table-based reports from using the `compare-narrow` grid path that can suppress per-panel horizontal scrolling.
 - Table-heavy compare reports now stay in standard panel-width layout, so horizontal overflow is handled consistently inside each `compare-scroll` panel.

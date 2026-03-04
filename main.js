@@ -144,7 +144,7 @@
 
   let reports = [];
 
-  const APP_VERSION = 'v6.1.19';
+  const APP_VERSION = 'v6.1.20';
   const UI_THEME_NT = 'nt';
   const CHART_MODE_ABSOLUTE = 'absolute';
   const CHART_MODE_NORMALIZED = 'normalized';
@@ -2209,6 +2209,7 @@
   ];
 
   const BAND_LABELS = new Set(BAND_DEFS.map((b) => b.label));
+  const BAND_DEF_BY_LABEL = new Map(BAND_DEFS.map((b) => [b.label, b]));
   const BAND_ORDER_INDEX = new Map(BAND_DEFS.map((b, idx) => [b.label, idx]));
   const METER_TOKEN_MAP = new Map();
   BAND_DEFS.forEach((band) => {
@@ -2524,6 +2525,87 @@
     initNavigation();
   }
 
+  function resolveFrequencyScatterBand(q) {
+    const freqBand = Number.isFinite(q?.freq) ? parseBandFromFreq(Number(q.freq)) : '';
+    if (freqBand) return freqBand;
+    const normalized = normalizeBandToken(q?.band || '');
+    return normalized || 'UNKNOWN';
+  }
+
+  function collectFrequencyScatterBandRanges(qsos) {
+    const byBand = new Map();
+    (qsos || []).forEach((q) => {
+      if (!Number.isFinite(q?.ts) || !Number.isFinite(q?.freq)) return;
+      const band = resolveFrequencyScatterBand(q);
+      const freq = Number(q.freq);
+      if (!byBand.has(band)) {
+        byBand.set(band, { band, minFreq: freq, maxFreq: freq });
+      } else {
+        const current = byBand.get(band);
+        if (freq < current.minFreq) current.minFreq = freq;
+        if (freq > current.maxFreq) current.maxFreq = freq;
+      }
+    });
+    return Array.from(byBand.values()).map((entry) => {
+      const def = BAND_DEF_BY_LABEL.get(entry.band);
+      const minFreq = Number(entry.minFreq);
+      const maxFreq = Number(entry.maxFreq);
+      const officialMin = Number.isFinite(def?.min) ? Number(def.min) : null;
+      const officialMax = Number.isFinite(def?.max) ? Number(def.max) : null;
+      return { band: entry.band, minFreq, maxFreq, officialMin, officialMax };
+    }).sort((a, b) => {
+      const ai = bandOrderIndex(a.band);
+      const bi = bandOrderIndex(b.band);
+      if (ai !== bi) return ai - bi;
+      return String(a.band || '').localeCompare(String(b.band || ''));
+    });
+  }
+
+  function mergeFrequencyScatterBandRanges(rangeA, rangeB) {
+    const merged = new Map();
+    const absorb = (entries) => {
+      (entries || []).forEach((entry) => {
+        if (!entry || !entry.band) return;
+        const band = String(entry.band).toUpperCase();
+        const minFreq = Number(entry.minFreq);
+        const maxFreq = Number(entry.maxFreq);
+        const incomingOfficialMin = Number(entry.officialMin);
+        const incomingOfficialMax = Number(entry.officialMax);
+        if (!merged.has(band)) {
+          const def = BAND_DEF_BY_LABEL.get(band);
+          merged.set(band, {
+            band,
+            minFreq: Number.isFinite(minFreq) ? minFreq : null,
+            maxFreq: Number.isFinite(maxFreq) ? maxFreq : null,
+            officialMin: Number.isFinite(def?.min) ? Number(def.min) : (Number.isFinite(incomingOfficialMin) ? incomingOfficialMin : null),
+            officialMax: Number.isFinite(def?.max) ? Number(def.max) : (Number.isFinite(incomingOfficialMax) ? incomingOfficialMax : null)
+          });
+          return;
+        }
+        const curr = merged.get(band);
+        if (Number.isFinite(minFreq)) curr.minFreq = Number.isFinite(curr.minFreq) ? Math.min(curr.minFreq, minFreq) : minFreq;
+        if (Number.isFinite(maxFreq)) curr.maxFreq = Number.isFinite(curr.maxFreq) ? Math.max(curr.maxFreq, maxFreq) : maxFreq;
+        if (!Number.isFinite(curr.officialMin) && Number.isFinite(incomingOfficialMin)) curr.officialMin = incomingOfficialMin;
+        if (!Number.isFinite(curr.officialMax) && Number.isFinite(incomingOfficialMax)) curr.officialMax = incomingOfficialMax;
+      });
+    };
+    absorb(rangeA?.bandRanges);
+    absorb(rangeB?.bandRanges);
+    return Array.from(merged.values()).map((entry) => {
+      const def = BAND_DEF_BY_LABEL.get(entry.band);
+      const minFreq = Number(entry.minFreq);
+      const maxFreq = Number(entry.maxFreq);
+      const officialMin = Number.isFinite(def?.min) ? Number(def.min) : (Number.isFinite(entry.officialMin) ? Number(entry.officialMin) : null);
+      const officialMax = Number.isFinite(def?.max) ? Number(def.max) : (Number.isFinite(entry.officialMax) ? Number(entry.officialMax) : null);
+      return { band: entry.band, minFreq, maxFreq, officialMin, officialMax };
+    }).sort((a, b) => {
+      const ai = bandOrderIndex(a.band);
+      const bi = bandOrderIndex(b.band);
+      if (ai !== bi) return ai - bi;
+      return String(a.band || '').localeCompare(String(b.band || ''));
+    });
+  }
+
   function getFrequencyScatterRange(qsos) {
     let minTs = Infinity;
     let maxTs = -Infinity;
@@ -2539,7 +2621,8 @@
       if (q.freq > maxFreq) maxFreq = q.freq;
     });
     if (!count) return null;
-    return { minTs, maxTs, minFreq, maxFreq, count };
+    const bandRanges = collectFrequencyScatterBandRanges(qsos);
+    return { minTs, maxTs, minFreq, maxFreq, count, bandRanges };
   }
 
   function mergeFrequencyScatterRanges(rangeA, rangeB) {
@@ -2551,7 +2634,8 @@
       maxTs: Math.max(rangeA.maxTs, rangeB.maxTs),
       minFreq: Math.min(rangeA.minFreq, rangeB.minFreq),
       maxFreq: Math.max(rangeA.maxFreq, rangeB.maxFreq),
-      count: (rangeA.count || 0) + (rangeB.count || 0)
+      count: (rangeA.count || 0) + (rangeB.count || 0),
+      bandRanges: mergeFrequencyScatterBandRanges(rangeA, rangeB)
     };
   }
 
@@ -2565,13 +2649,85 @@
     const all = [];
     (qsos || []).forEach((q) => {
       if (!Number.isFinite(q.ts) || !Number.isFinite(q.freq)) return;
-      all.push({ ts: q.ts, freq: q.freq });
+      all.push({ ts: q.ts, freq: q.freq, band: resolveFrequencyScatterBand(q) });
     });
     if (!all.length) return { points: [], total: 0 };
     const step = Math.ceil(all.length / maxPoints);
     if (step <= 1) return { points: all, total: all.length };
     const sampled = all.filter((_, idx) => idx % step === 0);
     return { points: sampled, total: all.length };
+  }
+
+  function buildFrequencyScatterBrackets(bandRanges, plotTop, plotBottom) {
+    const ordered = (bandRanges || []).slice().sort((a, b) => {
+      const ai = bandOrderIndex(a.band);
+      const bi = bandOrderIndex(b.band);
+      const aUnknown = ai === 9999;
+      const bUnknown = bi === 9999;
+      if (aUnknown !== bUnknown) return aUnknown ? 1 : -1;
+      if (ai !== bi) return bi - ai;
+      return String(a.band || '').localeCompare(String(b.band || ''));
+    });
+    if (!ordered.length) return [];
+    const totalHeight = Math.max(1, plotBottom - plotTop);
+    let gap = ordered.length > 1 ? Math.min(6, Math.max(1, totalHeight / (ordered.length * 8))) : 0;
+    let available = totalHeight - (gap * (ordered.length - 1));
+    let baseHeight = available / ordered.length;
+    if (!Number.isFinite(baseHeight) || baseHeight <= 0) {
+      gap = 0;
+      available = totalHeight;
+      baseHeight = available / ordered.length;
+    }
+    return ordered.map((entry, idx) => {
+      const top = plotTop + idx * (baseHeight + gap);
+      const bottom = top + baseHeight;
+      const rawMin = Number(entry.minFreq);
+      const rawMax = Number(entry.maxFreq);
+      const officialMin = Number(entry.officialMin);
+      const officialMax = Number(entry.officialMax);
+      let minFreq = Number.isFinite(rawMin) ? rawMin : 0;
+      let maxFreq = Number.isFinite(rawMax) ? rawMax : minFreq;
+      if (maxFreq < minFreq) {
+        const tmp = minFreq;
+        minFreq = maxFreq;
+        maxFreq = tmp;
+      }
+      const officialSpan = (Number.isFinite(officialMin) && Number.isFinite(officialMax) && officialMax > officialMin)
+        ? (officialMax - officialMin)
+        : null;
+      const minSpan = Number.isFinite(officialSpan)
+        ? Math.max(0.005, Math.min(0.05, officialSpan * 0.03))
+        : 0.01;
+      let span = maxFreq - minFreq;
+      if (!Number.isFinite(span) || span < minSpan) {
+        const center = Number.isFinite(minFreq) && Number.isFinite(maxFreq)
+          ? (minFreq + maxFreq) / 2
+          : (Number.isFinite(officialMin) ? officialMin : 0);
+        span = minSpan;
+        minFreq = center - (span / 2);
+        maxFreq = center + (span / 2);
+      }
+      const pad = span * 0.05;
+      minFreq -= pad;
+      maxFreq += pad;
+      if (Number.isFinite(officialMin)) minFreq = Math.max(minFreq, officialMin);
+      if (Number.isFinite(officialMax)) maxFreq = Math.min(maxFreq, officialMax);
+      if (!Number.isFinite(maxFreq) || maxFreq <= minFreq) {
+        if (Number.isFinite(officialMin) && Number.isFinite(officialMax) && officialMax > officialMin) {
+          minFreq = officialMin;
+          maxFreq = officialMax;
+        } else {
+          maxFreq = minFreq + minSpan;
+        }
+      }
+      return {
+        band: entry.band,
+        top,
+        bottom,
+        minFreq,
+        maxFreq
+      };
+    });
   }
 
   function applyRangePadding(min, max, padRatio, fallbackSpan) {
@@ -17951,9 +18107,22 @@
     const plotW = width - margin.left - margin.right;
     const plotH = height - margin.top - margin.bottom;
     const xScale = (ts) => margin.left + ((ts - minTs) / (maxTs - minTs)) * plotW;
-    const yScale = (freq) => margin.top + (1 - (freq - minFreq) / (maxFreq - minFreq)) * plotH;
+    const yScaleLinear = (freq) => margin.top + (1 - (freq - minFreq) / (maxFreq - minFreq)) * plotH;
+    const fallbackBandRanges = collectFrequencyScatterBandRanges(qsos);
+    const bandRanges = Array.isArray(range.bandRanges) && range.bandRanges.length
+      ? range.bandRanges
+      : fallbackBandRanges;
+    const brackets = buildFrequencyScatterBrackets(bandRanges, margin.top, height - margin.bottom);
+    const bracketByBand = new Map(brackets.map((entry) => [entry.band, entry]));
+    const yForPoint = (point) => {
+      const bracket = bracketByBand.get(point.band);
+      if (!bracket) return yScaleLinear(point.freq);
+      const span = bracket.maxFreq - bracket.minFreq;
+      if (!Number.isFinite(span) || span <= 0) return (bracket.top + bracket.bottom) / 2;
+      const ratio = Math.max(0, Math.min(1, (point.freq - bracket.minFreq) / span));
+      return bracket.bottom - (ratio * (bracket.bottom - bracket.top));
+    };
     const xTicks = 5;
-    const yTicks = 5;
     const xGrid = [];
     const xLabels = [];
     for (let i = 0; i < xTicks; i += 1) {
@@ -17965,16 +18134,19 @@
     }
     const yGrid = [];
     const yLabels = [];
-    for (let i = 0; i < yTicks; i += 1) {
-      const f = minFreq + ((maxFreq - minFreq) * i) / (yTicks - 1);
-      const y = yScale(f);
-      yGrid.push(`<line class="freq-grid" x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}"></line>`);
-      const label = formatFrequency(f);
-      yLabels.push(`<text class="freq-axis-text" x="${margin.left - 8}" y="${y + 4}" text-anchor="end">${escapeHtml(label)}</text>`);
-    }
+    brackets.forEach((bracket, idx) => {
+      const topY = bracket.top;
+      const bottomY = bracket.bottom;
+      yGrid.push(`<line class="freq-grid" x1="${margin.left}" y1="${topY}" x2="${width - margin.right}" y2="${topY}"></line>`);
+      if (idx === brackets.length - 1) {
+        yGrid.push(`<line class="freq-grid" x1="${margin.left}" y1="${bottomY}" x2="${width - margin.right}" y2="${bottomY}"></line>`);
+      }
+      const labelY = (topY + bottomY) / 2;
+      yLabels.push(`<text class="freq-axis-text" x="${margin.left - 8}" y="${labelY + 4}" text-anchor="end">${escapeHtml(formatBandLabel(bracket.band || ''))}</text>`);
+    });
     const dots = points.map((p) => {
       const x = xScale(p.ts);
-      const y = yScale(p.freq);
+      const y = yForPoint(p);
       return `<circle class="freq-dot" cx="${x}" cy="${y}" r="2"></circle>`;
     }).join('');
     const note = total > points.length
@@ -17994,7 +18166,7 @@
             ${xLabels.join('')}
             ${yLabels.join('')}
             <text class="freq-axis-title" x="${width / 2}" y="${height - 8}" text-anchor="middle">Time (UTC)</text>
-            <text class="freq-axis-title" x="14" y="${height / 2}" transform="rotate(-90 14 ${height / 2})" text-anchor="middle">Frequency (MHz)</text>
+            <text class="freq-axis-title" x="14" y="${height / 2}" transform="rotate(-90 14 ${height / 2})" text-anchor="middle">Band (within-band frequency)</text>
           </svg>
         </div>
         ${note}
