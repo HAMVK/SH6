@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storage Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>Storage Runtime Smoke</h1>
+  <p>Checks the extracted durable storage runtime, including compare-perspective hydration, raw-log cache access, archive writes, and autosave debounce.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      try {
+        const [mainSource, moduleSource, storageModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/storage/runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/storage/runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/storage/runtime.js')
+        ]);
+
+        add('Main.js imports the storage runtime module', mainSource.includes("const STORAGE_RUNTIME_MODULE_URL = './modules/storage/runtime.js?v=6.1.21';"));
+        add('Main.js preloads storage runtime during init', mainSource.includes('const storageRuntimeReady = loadStorageRuntimeModule();') && mainSource.includes('await storageRuntimeReady;'));
+        add('Main.js delegates durable storage readiness to the runtime', mainSource.includes('return getStorageRuntime().ensureDurableStorageReady();'));
+        add('Main.js delegates autosave scheduling to the runtime', mainSource.includes('return getStorageRuntime().scheduleAutosaveSession();'));
+        add('Storage runtime module exports the factory', moduleSource.includes('export function createStorageRuntime'));
+
+        const localWrites = new Map();
+        const saved = {
+          rawLogs: [],
+          archiveLogs: [],
+          autosaves: []
+        };
+        let buildPayloadCount = 0;
+        let createStorageCount = 0;
+
+        const fakeStorage = {
+          loadComparePerspectives: async () => [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }],
+          loadRawLog: async (slotId) => (String(slotId) === 'A' ? { text: 'RAW-A', meta: { slotId: 'A' } } : null),
+          saveRawLog: async (slotId, text, meta) => {
+            saved.rawLogs.push({ slotId, text, meta });
+          },
+          saveArchiveLog: async (path, text, meta) => {
+            saved.archiveLogs.push({ path, text, meta });
+          },
+          saveAutosaveSession: async (payload) => {
+            saved.autosaves.push(payload);
+          },
+          loadAutosaveSession: async () => ({ slots: [{ id: 'A', empty: false }] })
+        };
+
+        const runtime = storageModule.createStorageRuntime({
+          createStorage: async () => {
+            createStorageCount += 1;
+            return fakeStorage;
+          },
+          comparePerspectiveStorageKey: 'sh6_compare_perspectives_v1',
+          comparePerspectiveLimit: 2,
+          writeStorageText: (key, value) => localWrites.set(key, value),
+          buildSessionPayload: (includeRaw) => {
+            buildPayloadCount += 1;
+            return { includeRaw, stamp: buildPayloadCount };
+          }
+        });
+
+        const storageA = await runtime.ensureDurableStorageReady();
+        const storageB = await runtime.ensureDurableStorageReady();
+        const hydrated = JSON.parse(localWrites.get('sh6_compare_perspectives_v1') || '[]');
+        add(
+          'ensureDurableStorageReady memoizes the storage instance and hydrates compare perspectives',
+          storageA === fakeStorage && storageB === fakeStorage && createStorageCount === 1 && hydrated.length === 2,
+          JSON.stringify({ createStorageCount, hydrated })
+        );
+
+        const rawLog = await runtime.loadDurableRawLog('a');
+        add('loadDurableRawLog returns cached raw logs by slot id', rawLog?.text === 'RAW-A', JSON.stringify(rawLog));
+
+        runtime.persistDurableSlotLog('B', {
+          logFile: {
+            name: 'S53M.log',
+            size: 15573,
+            source: 'Archive',
+            path: 'ZRS_KVP/2025/jesen/S53M.log'
+          }
+        }, 'RAW-B');
+        await wait(30);
+        add(
+          'persistDurableSlotLog writes both raw-log and archive-log cache entries',
+          saved.rawLogs.length === 1 && saved.archiveLogs.length === 1 && saved.rawLogs[0].slotId === 'B' && saved.archiveLogs[0].path === 'ZRS_KVP/2025/jesen/S53M.log',
+          JSON.stringify(saved)
+        );
+
+        runtime.scheduleAutosaveSession();
+        runtime.scheduleAutosaveSession();
+        await wait(460);
+        add(
+          'scheduleAutosaveSession debounces to a single persisted autosave payload',
+          saved.autosaves.length === 1 && saved.autosaves[0]?.includeRaw === false && buildPayloadCount === 1,
+          JSON.stringify({ autosaves: saved.autosaves, buildPayloadCount })
+        );
+
+        const autosave = await runtime.loadAutosaveSession();
+        add('loadAutosaveSession returns the persisted autosave payload', Array.isArray(autosave?.slots) && autosave.slots.length === 1, JSON.stringify(autosave));
+
+        const failed = checks.filter((entry) => !entry.ok);
+        setResult(failed.length === 0, {
+          checksTotal: checks.length,
+          checksFailed: failed.length,
+          failed,
+          createStorageCount,
+          saved,
+          buildPayloadCount
+        });
+      } catch (err) {
+        setResult(false, {
+          error: err && err.message ? err.message : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

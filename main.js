@@ -189,6 +189,7 @@
   const COMPARE_WORKSPACE_MODULE_URL = './modules/compare/workspace-ui.js?v=6.1.21';
   const RETAINED_RUNTIME_MODULE_URL = './modules/reports/retained-runtime.js?v=6.1.21';
   const NAVIGATION_RUNTIME_MODULE_URL = './modules/ui/navigation-runtime.js?v=6.1.21';
+  const STORAGE_RUNTIME_MODULE_URL = './modules/storage/runtime.js?v=6.1.21';
   const ARCHIVE_CLIENT_MODULE_URL = './modules/archive/client.js?v=6.1.21';
   const INVESTIGATION_WORKSPACE_MODULE_URL = './modules/reports/investigation-workspace.js?v=6.1.21';
   const SESSION_CODEC_MODULE_URL = './modules/session/codec.js?v=6.1.21';
@@ -1270,9 +1271,10 @@
   let navigationRuntime = null;
   let retainedRuntimeModulePromise = null;
   let retainedRuntime = null;
+  let storageRuntimeModulePromise = null;
+  let storageRuntime = null;
   let virtualTableModulePromise = null;
   let durableStorageModulePromise = null;
-  let durableStorageReadyPromise = null;
   let compareWorkspaceModulePromise = null;
   let compareWorkspaceRenderer = null;
   let archiveClientModulePromise = null;
@@ -1285,7 +1287,6 @@
   let comparePerspectiveStore = null;
   let exportRuntimeModulePromise = null;
   let exportRuntime = null;
-  let autosaveSessionTimer = null;
   let engineTaskWorker = null;
   let engineTaskSeq = 0;
   let derivedRecomputeSeq = 0;
@@ -1461,6 +1462,37 @@
       virtualTableModulePromise = import('./modules/ui/virtual-table.js');
     }
     return virtualTableModulePromise;
+  }
+
+  function loadStorageRuntimeModule() {
+    if (!storageRuntimeModulePromise) {
+      storageRuntimeModulePromise = import(STORAGE_RUNTIME_MODULE_URL)
+        .then((mod) => {
+          if (!mod || typeof mod.createStorageRuntime !== 'function') {
+            throw new Error('storage runtime module unavailable');
+          }
+          storageRuntime = mod.createStorageRuntime({
+            createStorage: async () => {
+              const storageModule = await loadDurableStorageModule();
+              if (!storageModule || typeof storageModule.createSh6Storage !== 'function') return null;
+              return storageModule.createSh6Storage({ appVersion: APP_VERSION });
+            },
+            comparePerspectiveStorageKey: COMPARE_PERSPECTIVE_STORAGE_KEY,
+            comparePerspectiveLimit: COMPARE_PERSPECTIVE_LIMIT,
+            writeStorageText: (key, value) => localStorage.setItem(key, value),
+            buildSessionPayload
+          });
+          return storageRuntime;
+        });
+    }
+    return storageRuntimeModulePromise;
+  }
+
+  function getStorageRuntime() {
+    if (!storageRuntime) {
+      throw new Error('storage runtime not loaded');
+    }
+    return storageRuntime;
   }
 
   function loadDurableStorageModule() {
@@ -1739,58 +1771,19 @@
   }
 
   async function ensureDurableStorageReady() {
-    if (!durableStorageReadyPromise) {
-      durableStorageReadyPromise = (async () => {
-        const mod = await loadDurableStorageModule();
-        if (!mod || typeof mod.createSh6Storage !== 'function') return null;
-        const storage = await mod.createSh6Storage({ appVersion: APP_VERSION });
-        const perspectives = await storage.loadComparePerspectives().catch(() => []);
-        if (Array.isArray(perspectives) && perspectives.length) {
-          localStorage.setItem(COMPARE_PERSPECTIVE_STORAGE_KEY, JSON.stringify(perspectives.slice(0, COMPARE_PERSPECTIVE_LIMIT)));
-        }
-        return storage;
-      })();
-    }
-    return durableStorageReadyPromise;
+    return getStorageRuntime().ensureDurableStorageReady();
   }
 
   async function loadDurableRawLog(slotId) {
-    const storage = await ensureDurableStorageReady().catch(() => null);
-    if (!storage || typeof storage.loadRawLog !== 'function') return null;
-    const record = await storage.loadRawLog(String(slotId || '').toUpperCase()).catch(() => null);
-    return record && typeof record.text === 'string' ? record : null;
+    return getStorageRuntime().loadDurableRawLog(slotId);
   }
 
   function persistDurableSlotLog(slotId, slot, text) {
-    const safeSlotId = String(slotId || '').toUpperCase();
-    const safeText = String(text == null ? '' : text);
-    if (!safeSlotId || !safeText) return;
-    const file = slot?.logFile || {};
-    const meta = {
-      slotId: safeSlotId,
-      name: file.name || `${safeSlotId}.log`,
-      size: Number.isFinite(file.size) ? file.size : safeText.length,
-      source: file.source || '',
-      path: file.path || ''
-    };
-    ensureDurableStorageReady().then((storage) => {
-      if (!storage) return;
-      storage.saveRawLog?.(safeSlotId, safeText, meta).catch(() => {});
-      if (meta.path) {
-        storage.saveArchiveLog?.(meta.path, safeText, meta).catch(() => {});
-      }
-    }).catch(() => {});
+    return getStorageRuntime().persistDurableSlotLog(slotId, slot, text);
   }
 
   function scheduleAutosaveSession() {
-    if (autosaveSessionTimer) clearTimeout(autosaveSessionTimer);
-    autosaveSessionTimer = setTimeout(() => {
-      autosaveSessionTimer = null;
-      const payload = buildSessionPayload(false);
-      ensureDurableStorageReady().then((storage) => {
-        storage?.saveAutosaveSession?.(payload).catch(() => {});
-      }).catch(() => {});
-    }, 400);
+    return getStorageRuntime().scheduleAutosaveSession();
   }
 
   function ensureEngineTaskWorker() {
@@ -21273,6 +21266,7 @@
     const sessionCodecReady = loadSessionCodecModule();
     const comparePerspectiveReady = loadComparePerspectiveModule();
     const exportRuntimeReady = loadExportRuntimeModule();
+    const storageRuntimeReady = loadStorageRuntimeModule();
     await navigationRuntimeReady;
     await retainedRuntimeReady;
     setupNavSearch();
@@ -21358,14 +21352,14 @@
     await sessionCodecReady;
     await comparePerspectiveReady;
     await exportRuntimeReady;
+    await storageRuntimeReady;
     updateBandRibbon();
     const mapParams = parseMapViewParams();
     const permalinkState = parsePermalinkState();
     if (permalinkState) {
       await applySessionPayload(permalinkState, { fromPermalink: true });
     } else {
-      const storage = await ensureDurableStorageReady().catch(() => null);
-      const autosave = await storage?.loadAutosaveSession?.().catch(() => null);
+      const autosave = await getStorageRuntime().loadAutosaveSession().catch(() => null);
       const hasAutosave = autosave && Array.isArray(autosave.slots) && autosave.slots.some((slot) => slot && !slot.empty);
       if (hasAutosave) {
         await applySessionPayload(autosave, { fromPermalink: false });
