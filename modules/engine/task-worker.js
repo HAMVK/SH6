@@ -1,9 +1,19 @@
+import '../analysis/core.js';
+
 function normalizeBandToken(value) {
   return String(value || '').trim().toUpperCase();
 }
 
 function normalizeCall(value) {
   return String(value || '').trim().toUpperCase();
+}
+
+function getAnalysisCore() {
+  const core = globalThis.SH6AnalysisCore;
+  if (!core || typeof core.analyzeLogText !== 'function' || typeof core.deriveLog !== 'function') {
+    throw new Error('SH6 analysis core is unavailable in engine worker.');
+  }
+  return core;
 }
 
 function buildSpotIndexes(qsos) {
@@ -64,6 +74,32 @@ self.onmessage = async (event) => {
     }
     if (payload.type === 'archiveText') {
       const data = await fetchArchiveText(payload.urls || []);
+      self.postMessage({ type: 'taskResult', key, data });
+      return;
+    }
+    if (payload.type === 'analyzeLog') {
+      const data = getAnalysisCore().analyzeLogText(
+        payload.text || '',
+        payload.filename || '',
+        payload.context || {},
+        payload.analysis || {}
+      );
+      self.postMessage({ type: 'taskResult', key, data });
+      return;
+    }
+    if (payload.type === 'deriveSlots') {
+      const slots = Array.isArray(payload.slots) ? payload.slots : [];
+      const analysis = payload.analysis || {};
+      const data = {
+        slots: slots.map((entry) => {
+          const result = getAnalysisCore().deriveLog(entry?.qsoData || { type: 'unknown', qsos: [] }, entry?.context || {}, analysis);
+          return {
+            slotId: String(entry?.slotId || '').toUpperCase(),
+            qsoData: result.qsoData,
+            derived: result.derived
+          };
+        })
+      };
       self.postMessage({ type: 'taskResult', key, data });
       return;
     }

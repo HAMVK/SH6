@@ -1396,14 +1396,14 @@
         continue;
       }
       if (data.rawText) {
-        applyLoadedLogToSlot(id, data.rawText, data.file?.name || `${id}.log`, data.file?.size || data.rawText.length, 'Session', null, data.archivePath || '');
+        await applyLoadedLogToSlot(id, data.rawText, data.file?.name || `${id}.log`, data.file?.size || data.rawText.length, 'Session', null, data.archivePath || '');
         applySpotSettings(getSlotById(id), data);
         continue;
       }
       if (data.sourceType === 'local') {
         const cachedRaw = await loadDurableRawLog(id);
         if (cachedRaw && cachedRaw.text) {
-          applyLoadedLogToSlot(id, cachedRaw.text, data.file?.name || `${id}.log`, data.file?.size || cachedRaw.text.length, 'Autosave', null, data.archivePath || '');
+          await applyLoadedLogToSlot(id, cachedRaw.text, data.file?.name || `${id}.log`, data.file?.size || cachedRaw.text.length, 'Autosave', null, data.archivePath || '');
           applySpotSettings(getSlotById(id), data);
           continue;
         }
@@ -1412,7 +1412,7 @@
         const result = await fetchArchiveLogText(data.archivePath);
         if (result && result.text) {
           const name = data.file?.name || data.archivePath.split('/').pop() || `${id}.log`;
-          applyLoadedLogToSlot(id, result.text, name, result.text.length, 'Archive', null, data.archivePath);
+          await applyLoadedLogToSlot(id, result.text, name, result.text.length, 'Archive', null, data.archivePath);
           applySpotSettings(getSlotById(id), data);
         } else {
           state.sessionNotice.push(`Failed to load archive log for slot ${id}.`);
@@ -1692,6 +1692,7 @@
   let autosaveSessionTimer = null;
   let engineTaskWorker = null;
   let engineTaskSeq = 0;
+  let derivedRecomputeSeq = 0;
   const engineTaskResolvers = new Map();
 
   const base64UrlEncode = (value) => {
@@ -1927,6 +1928,56 @@
       engineTaskResolvers.set(key, { resolve, reject });
       worker.postMessage({ type, key, ...payload });
     });
+  }
+
+  function getAnalysisCore() {
+    const core = globalThis.SH6AnalysisCore;
+    if (!core || typeof core.analyzeLogText !== 'function' || typeof core.buildDerived !== 'function') {
+      throw new Error('SH6 analysis core is unavailable.');
+    }
+    return core;
+  }
+
+  function buildAnalysisResourcesPayload() {
+    return {
+      ctyTable: Array.isArray(state.ctyTable) ? state.ctyTable : [],
+      masterCalls: state.masterSet instanceof Set ? Array.from(state.masterSet.values()) : [],
+      scoringSpec: state.scoringSpec || null,
+      scoringSource: state.scoringSource || '',
+      scoringStatus: state.scoringStatus || 'pending',
+      scoringError: state.scoringError || '',
+      analysisMode: state.analysisMode || ANALYSIS_MODE_DEFAULT,
+      callsignGridEntries: state.callsignGridCache instanceof Map ? Array.from(state.callsignGridCache.entries()) : []
+    };
+  }
+
+  async function analyzeLogWithEngine(text, filename, context = {}) {
+    const analysis = buildAnalysisResourcesPayload();
+    try {
+      return await runEngineTask('analyzeLog', { text, filename, context, analysis });
+    } catch (err) {
+      console.warn('Engine analyzeLog fallback:', err);
+      return getAnalysisCore().analyzeLogText(text, filename, context, analysis);
+    }
+  }
+
+  async function deriveSlotsWithEngine(slots) {
+    const analysis = buildAnalysisResourcesPayload();
+    const safeSlots = Array.isArray(slots) ? slots : [];
+    try {
+      const result = await runEngineTask('deriveSlots', { slots: safeSlots, analysis });
+      return Array.isArray(result?.slots) ? result.slots : [];
+    } catch (err) {
+      console.warn('Engine deriveSlots fallback:', err);
+      return safeSlots.map((entry) => {
+        const result = getAnalysisCore().deriveLog(entry?.qsoData || { type: 'unknown', qsos: [] }, entry?.context || {}, analysis);
+        return {
+          slotId: String(entry?.slotId || '').toUpperCase(),
+          qsoData: result.qsoData,
+          derived: result.derived
+        };
+      });
+    }
   }
 
   function isRetainedReport(reportId) {
@@ -6962,128 +7013,7 @@
   }
 
   function parseLogFile(text, filename) {
-    const lower = (filename || '').toLowerCase();
-    if (lower.endsWith('.log') || lower.endsWith('.cbr') || /START-OF-LOG:/i.test(text) || /^QSO:/im.test(text)) {
-      const cab = parseCabrillo(text);
-      const metaRaw = cab.header || {};
-      const meta = {};
-      Object.keys(metaRaw).forEach((key) => {
-        meta[key] = normalizeCabrilloHeaderValue(metaRaw[key]);
-      });
-      const sharedRaw = {
-        STATION_CALLSIGN: meta.CALLSIGN || meta.CALL || null,
-        CONTEST: meta.CONTEST || null,
-        CATEGORY_OPERATOR: meta['CATEGORY-OPERATOR'] || null,
-        CATEGORY_ASSISTED: meta['CATEGORY-ASSISTED'] || null,
-        CATEGORY_POWER: meta['CATEGORY-POWER'] || null,
-        CATEGORY_BAND: meta['CATEGORY-BAND'] || null,
-        CATEGORY_MODE: meta['CATEGORY-MODE'] || null,
-        CATEGORY_TRANSMITTER: meta['CATEGORY-TRANSMITTER'] || null,
-        CATEGORY_STATION: meta['CATEGORY-STATION'] || null,
-        CLUB: meta.CLUB || null,
-        SOFTWARE: meta['CREATED-BY'] || null,
-        CLAIMED_SCORE: meta['CLAIMED-SCORE'] || meta['CLAIMED-SCORE:'] || null,
-        OPERATORS: meta.OPERATORS || null,
-        GRID: meta['GRID-LOCATOR'] || meta['HQ-GRID-LOCATOR'] || null,
-        MY_GRIDSQUARE: meta['GRID-LOCATOR'] || meta['HQ-GRID-LOCATOR'] || null,
-        LOCATION: meta.LOCATION || null
-      };
-      const qsos = cab.qsos.map((r, idx) => ({
-        id: idx,
-        qsoNumber: idx + 1,
-        call: normalizeCall(r.CALL),
-        band: normalizeBand(r.BAND, r.FREQ),
-        mode: normalizeMode(r.MODE),
-        freq: r.FREQ ? parseFloat(r.FREQ) : null,
-        time: `${(r.QSO_DATE || '').trim()} ${(r.TIME_ON || '').trim()}`,
-        ts: parseDateTime(r.QSO_DATE, r.TIME_ON),
-        op: normalizeCall(r.OPERATOR || sharedRaw.STATION_CALLSIGN),
-        grid: r.GRIDSQUARE,
-        rstSent: r.RST_SENT,
-        rstRcvd: r.RST_RCVD,
-        exchSent: firstNonNull(r.STX_STRING, r.STX),
-        exchRcvd: firstNonNull(r.SRX_STRING, r.SRX),
-        points: parseInt(firstNonNull(r.POINTS), 10),
-        srx: firstNonNull(r.SRX_STRING, r.SRX),
-        stx: firstNonNull(r.STX_STRING, r.STX),
-        isQtc: Boolean(r.IS_QTC),
-        raw: { ...sharedRaw, ...r }
-      }));
-      return { type: 'CABRILLO', qsos };
-    }
-    if (lower.endsWith('.adi') || lower.endsWith('.adif') || /<eoh>/i.test(text) || /<eor>/i.test(text)) {
-      const adifRecords = parseAdif(text);
-      const qsos = adifRecords.map((r, idx) => ({
-        id: idx,
-        qsoNumber: idx + 1,
-        call: normalizeCall(r.CALL),
-        band: normalizeBand(r.BAND, r.FREQ ? parseFloat(r.FREQ) : null),
-        mode: normalizeMode(r.MODE),
-        freq: r.FREQ ? parseFloat(r.FREQ) : null,
-        time: `${(r.QSO_DATE || '').trim()} ${(r.TIME_ON || '').trim()}`,
-        ts: parseDateTime(r.QSO_DATE, r.TIME_ON),
-        op: normalizeCall(r.OPERATOR || r.STATION_CALLSIGN),
-        grid: r.GRIDSQUARE,
-        rstSent: r.RST_SENT,
-        rstRcvd: r.RST_RCVD,
-        exchSent: firstNonNull(r.STX_STRING, r.STX),
-        exchRcvd: firstNonNull(r.SRX_STRING, r.SRX, r.APP_N1MM_EXCHANGE1),
-        points: parseInt(firstNonNull(r.APP_N1MM_POINTS, r.QSO_PTS, r.QSO_POINTS, r.POINTS), 10),
-        srx: firstNonNull(r.SRX_STRING, r.SRX),
-        stx: firstNonNull(r.STX_STRING, r.STX),
-        comment: r.COMMENT || r.NOTES,
-        raw: r
-      }));
-      return { type: 'ADIF', qsos };
-    }
-    if (lower.endsWith('.cbf')) {
-      const cbfRecords = parseCbf(text);
-      const qsos = cbfRecords.map((r, idx) => ({
-        id: idx,
-        qsoNumber: idx + 1,
-        call: normalizeCall(r.CALL),
-        band: normalizeBand(r.BAND, null),
-        mode: normalizeMode(r.MODE),
-        freq: null,
-        time: `${(r.DATE || '').trim()} ${(r.TIME || '').trim()}`,
-        ts: parseDateTime(r.DATE, r.TIME),
-        op: normalizeCall(r.OPERATOR || r.STATION_CALLSIGN),
-        grid: r.GRIDSQUARE,
-        rstSent: r.RST_SENT,
-        rstRcvd: r.RST_RCVD,
-        exchSent: firstNonNull(r.EXCH_SENT, r.STX),
-        exchRcvd: firstNonNull(r.EXCH_RCVD, r.SRX),
-        points: parseInt(firstNonNull(r.POINTS), 10),
-        srx: firstNonNull(r.EXCH_RCVD, r.SRX),
-        stx: firstNonNull(r.EXCH_SENT, r.STX),
-        comment: r.COMMENT || r.NOTES,
-        raw: r
-      }));
-      return { type: 'CBF', qsos };
-    }
-    // Fallback: try ADIF
-    const adifRecords = parseAdif(text);
-    if (adifRecords.length) {
-      const qsos = adifRecords.map((r, idx) => ({
-        id: idx,
-        qsoNumber: idx + 1,
-        call: normalizeCall(r.CALL),
-        band: normalizeBand(r.BAND, r.FREQ ? parseFloat(r.FREQ) : null),
-        mode: normalizeMode(r.MODE),
-        freq: r.FREQ ? parseFloat(r.FREQ) : null,
-        time: `${(r.QSO_DATE || '').trim()} ${(r.TIME_ON || '').trim()}`,
-        ts: parseDateTime(r.QSO_DATE, r.TIME_ON),
-        op: normalizeCall(r.OPERATOR || r.STATION_CALLSIGN),
-        rstSent: r.RST_SENT,
-        rstRcvd: r.RST_RCVD,
-        exchSent: firstNonNull(r.STX_STRING, r.STX),
-        exchRcvd: firstNonNull(r.SRX_STRING, r.SRX, r.APP_N1MM_EXCHANGE1),
-        points: parseInt(firstNonNull(r.APP_N1MM_POINTS, r.QSO_PTS, r.QSO_POINTS, r.POINTS), 10),
-        raw: r
-      }));
-      return { type: 'ADIF', qsos };
-    }
-    return { type: 'unknown', qsos: [] };
+    return getAnalysisCore().parseLogFile(text, filename);
   }
 
   function mapSpotStatus(status) {
@@ -7245,7 +7175,7 @@
     }
     try {
       const text = await file.text();
-      const parsed = applyLoadedLogToSlot(slotId, text, file.name, file.size, sourceLabel || 'Uploaded', statusEl);
+      const parsed = await applyLoadedLogToSlot(slotId, text, file.name, file.size, sourceLabel || 'Uploaded', statusEl);
       if (parsed && parsed.type === 'unknown') {
         showInvalidFileAlert('Invalid log file. The format could not be recognized.');
       } else if (parsed && parsed.qsos && parsed.qsos.length === 0) {
@@ -7331,7 +7261,7 @@
     }
   }
 
-  function applyLoadedLogToSlot(slotId, text, filename, size, sourceLabel, statusEl, sourcePath) {
+  async function applyLoadedLogToSlot(slotId, text, filename, size, sourceLabel, statusEl, sourcePath) {
     const safeSize = Number.isFinite(size) ? size : text.length;
     const slotKey = String(slotId || 'A').toUpperCase();
     const target = getSlotById(slotId);
@@ -7351,14 +7281,22 @@
       state.competitorCoach = createCompetitorCoachState(state.competitorCoach);
     }
     const statusTarget = statusEl || getStatusElBySlot(slotId);
-    if (statusTarget) statusTarget.textContent = `Loaded ${filename} (${formatNumberSh6(safeSize)} bytes)`;
     target.rawLogText = text;
-    target.qsoData = parseLogFile(text, filename);
-    queueCallsignGridLookup(target.qsoData.qsos);
-    target.derived = buildDerived(target.qsoData.qsos, {
+    const analysisSeq = (target.analysisSeq || 0) + 1;
+    target.analysisSeq = analysisSeq;
+    if (statusTarget) statusTarget.textContent = `Analyzing ${filename} (${formatNumberSh6(safeSize)} bytes)...`;
+    const analyzed = await analyzeLogWithEngine(text, filename, {
+      logFile: target.logFile,
+      sourcePath: target.logFile?.path || '',
+      analysisMode: state.analysisMode
+    });
+    if (target.analysisSeq !== analysisSeq) return null;
+    target.qsoData = analyzed?.qsoData || { type: 'unknown', qsos: [] };
+    target.derived = analyzed?.derived || buildDerived(target.qsoData.qsos, {
       logFile: target.logFile,
       analysisMode: state.analysisMode
     });
+    queueCallsignGridLookup(target.qsoData.qsos);
     const suggestedMode = target === state || !state.qsoData ? resolveAnalysisModeSuggestion(target.qsoData, target.derived) : null;
     if (target === state || !state.qsoData) {
       setAnalysisModeSuggestion(suggestedMode);
@@ -7534,7 +7472,7 @@
             state.ctyStatus = 'ok';
             state.ctyError = null;
             state.ctySource = 'local upload';
-            recomputeDerived('cty');
+            await recomputeDerived('cty');
           }
         } catch (err) {
           state.ctyTable = null;
@@ -7564,7 +7502,7 @@
             state.masterStatus = 'ok';
             state.masterError = null;
             state.masterSource = 'local upload';
-            recomputeDerived('master');
+            await recomputeDerived('master');
           }
         } catch (err) {
           state.masterSet = null;
@@ -7577,35 +7515,47 @@
     }
   }
 
-  function recomputeDerived(reason) {
+  async function recomputeDerived(reason) {
+    const slotRequests = [];
     if (state.qsoData) {
-      state.derived = buildDerived(state.qsoData.qsos, {
-        logFile: state.logFile,
-        analysisMode: state.analysisMode
-      });
-      state.qsoLite = buildQsoLiteArray(state.qsoData.qsos);
-      state.fullQsoData = state.qsoData;
-      state.fullDerived = state.derived;
-      state.bandDerivedCache = new Map();
-      state.periodFilterCache = new Map();
-      state.logVersion = (state.logVersion || 0) + 1;
-    }
-    state.compareSlots.forEach((slot) => {
-      if (slot && slot.qsoData) {
-        slot.derived = buildDerived(slot.qsoData.qsos, {
-          logFile: slot.logFile,
+      slotRequests.push({
+        slotId: 'A',
+        qsoData: state.qsoData,
+        context: {
+          logFile: state.logFile,
+          sourcePath: state.logFile?.path || '',
           analysisMode: state.analysisMode
-        });
-        slot.qsoLite = buildQsoLiteArray(slot.qsoData.qsos);
-        slot.fullQsoData = slot.qsoData;
-        slot.fullDerived = slot.derived;
-        slot.bandDerivedCache = new Map();
-        slot.periodFilterCache = new Map();
-        slot.logVersion = (slot.logVersion || 0) + 1;
-      }
+        }
+      });
+    }
+    state.compareSlots.forEach((slot, index) => {
+      if (!slot || !slot.qsoData) return;
+      slotRequests.push({
+        slotId: String.fromCharCode('B'.charCodeAt(0) + index),
+        qsoData: slot.qsoData,
+        context: {
+          logFile: slot.logFile,
+          sourcePath: slot.logFile?.path || '',
+          analysisMode: state.analysisMode
+        }
+      });
     });
-    const hasAny = state.qsoData || state.compareSlots.some((slot) => slot && slot.qsoData);
-    if (!hasAny) return;
+    if (!slotRequests.length) return;
+    const recomputeSeq = ++derivedRecomputeSeq;
+    const results = await deriveSlotsWithEngine(slotRequests);
+    if (recomputeSeq !== derivedRecomputeSeq) return;
+    results.forEach((result) => {
+      const slot = getSlotById(result.slotId);
+      if (!slot) return;
+      slot.qsoData = result.qsoData;
+      slot.derived = result.derived;
+      slot.qsoLite = buildQsoLiteArray(slot.qsoData?.qsos || []);
+      slot.fullQsoData = slot.qsoData;
+      slot.fullDerived = slot.derived;
+      slot.bandDerivedCache = new Map();
+      slot.periodFilterCache = new Map();
+      slot.logVersion = (slot.logVersion || 0) + 1;
+    });
     state.competitorCoach = createCompetitorCoachState(state.competitorCoach);
     invalidateCompareLogData();
     syncPeriodFiltersWithAvailableData();
@@ -8011,7 +7961,7 @@
     ensureCompareCountForSlot(slotId);
     setSlotAction(slotId, 'archive');
     const fileName = String(match.path).split('/').pop() || `${callsign}.log`;
-    applyLoadedLogToSlot(
+    await applyLoadedLogToSlot(
       slotId,
       downloaded.text,
       fileName,
@@ -8322,7 +8272,9 @@
         console.warn('Callsign lookup warnings:', warnings.join(' | '));
       }
       updateDataStatus();
-      recomputeDerived('lookup');
+      recomputeDerived('lookup').catch((err) => {
+        console.warn('Lookup-driven rederive failed:', err);
+      });
       if (callsignGridPending.size) {
         scheduleCallsignGridLookup();
       }
@@ -9262,7 +9214,7 @@
       if (status === 'loading') state.ctySource = url;
       if (status === 'qrx') state.ctySource = url;
       updateDataStatus();
-    }).then((res) => {
+    }).then(async (res) => {
       if (res.error) {
         state.ctyError = res.error;
         state.prefixCache = new Map();
@@ -9279,7 +9231,7 @@
           state.prefixCache = new Map();
           state.ctyError = null;
           state.ctyStatus = 'ok';
-          recomputeDerived('cty');
+          await recomputeDerived('cty');
         } else {
           state.ctyTable = null;
           state.prefixCache = new Map();
@@ -9296,7 +9248,7 @@
       if (status === 'loading') state.masterSource = url;
       if (status === 'qrx') state.masterSource = url;
       updateDataStatus();
-    }).then((res) => {
+    }).then(async (res) => {
       if (res.error) {
         state.masterError = res.error;
         updateDataStatus();
@@ -9311,7 +9263,7 @@
           state.masterSet = set;
           state.masterError = null;
           state.masterStatus = 'ok';
-          recomputeDerived('master');
+          await recomputeDerived('master');
         } else {
           state.masterSet = null;
           state.masterError = 'Parsed 0 calls from MASTER.DTA';
@@ -9324,11 +9276,11 @@
     fetchWithFallback(scoringUrls, (status, url) => {
       state.scoringStatus = status;
       if (status === 'error' || status === 'loading' || status === 'qrx') state.scoringSource = url;
-    }).then((res) => {
+    }).then(async (res) => {
       if (res.error) {
         state.scoringError = res.error;
         state.scoringStatus = 'error';
-        recomputeDerived('scoring');
+        await recomputeDerived('scoring');
         return;
       }
       try {
@@ -9341,116 +9293,12 @@
         state.scoringStatus = 'error';
         state.scoringError = err && err.message ? err.message : 'Failed to parse scoring spec';
       }
-      recomputeDerived('scoring');
+      await recomputeDerived('scoring');
     });
   }
 
   function parseCtyDat(text) {
-    // Parses cty.dat into array of prefix objects for quick lookups.
-    // cty.dat format: country:...:tz, prefix1,prefix2,...;aliases with entries spanning multiple lines ending in ';'
-    if (!text || /<html|<body/i.test(text)) return [];
-    const lines = text.split(/\r?\n/);
-    const entries = [];
-    const parseToken = (tok, base, isPrimary) => {
-      const cleaned = tok.replace(/[:\s]+$/g, '');
-      const m = cleaned.match(/^(=)?([^(\[\s]+)(?:\((\d+)\))?(?:\[(\d+)\])?$/);
-      if (!m) return null;
-      const [, exactMark, bodyRaw, cqOverride, ituOverride] = m;
-      const body = bodyRaw.replace(/^\*+/, '');
-      if (!body) return null;
-      return {
-        prefix: body.toUpperCase(),
-        exact: exactMark === '=',
-        primary: Boolean(isPrimary),
-        country: base.country,
-        cqZone: cqOverride ? parseInt(cqOverride, 10) : base.cqZone,
-        ituZone: ituOverride ? parseInt(ituOverride, 10) : base.ituZone,
-        continent: base.continent,
-        lat: base.lat,
-        lon: base.lon,
-        tz: base.tz
-      };
-    };
-
-    let buffer = '';
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith('#')) continue;
-      buffer += (buffer ? ' ' : '') + line;
-      while (buffer.includes(';')) {
-        const [entryChunk, restChunk] = buffer.split(/;\s*/, 2);
-        buffer = restChunk || '';
-        const entryLine = entryChunk.trim();
-        if (!entryLine) continue;
-        // Split by colon to get fixed fields; the remainder (after 7 fields) is the prefix list with commas
-        const fields = entryLine.split(':');
-        if (fields.length < 8) continue;
-        const [name, cqZone, ituZone, continent, lat, lon, tz, ...restFields] = fields;
-        const prefixBlock = restFields.join(':').replace(/;+$/, '');
-        const prefixes = prefixBlock.split(/[, \t]+/).filter(Boolean);
-        const lonVal = parseFloat(lon);
-        const base = {
-          country: name,
-          cqZone: parseInt(cqZone, 10) || null,
-          ituZone: parseInt(ituZone, 10) || null,
-          continent: (continent || '').trim() || null,
-          lat: parseFloat(lat) || null,
-          // cty.dat longitudes are west-positive; invert to standard east-positive.
-          lon: Number.isFinite(lonVal) ? -lonVal : null,
-          tz: parseFloat(tz) || null
-        };
-        let primarySet = false;
-        for (const p of prefixes) {
-          const parsed = parseToken(p.trim(), base, !primarySet);
-          if (parsed) {
-            entries.push(parsed);
-            if (!primarySet) primarySet = true;
-          }
-        }
-      }
-    }
-    // Sort by exact first, then prefix length descending for longest-match lookups.
-    const sorted = entries.sort((a, b) => {
-      if (a.exact !== b.exact) return a.exact ? -1 : 1;
-      return b.prefix.length - a.prefix.length;
-    });
-    if (sorted.length > 0) return sorted;
-
-    // Fallback loose parser if structured parse failed (e.g., unexpected formatting)
-    const looseEntries = [];
-    for (const raw of lines) {
-      const line = raw.trim();
-      if (!line || line.startsWith('#')) continue;
-      const firstColon = line.indexOf(':');
-      if (firstColon === -1) continue;
-      const countryFields = line.split(':');
-      if (countryFields.length < 7) continue;
-      const [name, cqZone, ituZone, continent, lat, lon, tz, restFields] = countryFields;
-      const suffix = restFields ? restFields.split(/[;,]/) : [];
-      const lonVal = parseFloat(lon);
-      const base = {
-        country: name,
-        cqZone: parseInt(cqZone, 10) || null,
-        ituZone: parseInt(ituZone, 10) || null,
-        continent: (continent || '').trim() || null,
-        lat: parseFloat(lat) || null,
-        // cty.dat longitudes are west-positive; invert to standard east-positive.
-        lon: Number.isFinite(lonVal) ? -lonVal : null,
-        tz: parseFloat(tz) || null
-      };
-      let primarySet = false;
-      for (const t of suffix) {
-        const parsed = parseToken(t.trim(), base, !primarySet);
-        if (parsed) {
-          looseEntries.push(parsed);
-          if (!primarySet) primarySet = true;
-        }
-      }
-    }
-    return looseEntries.sort((a, b) => {
-      if (a.exact !== b.exact) return a.exact ? -1 : 1;
-      return b.prefix.length - a.prefix.length;
-    });
+    return getAnalysisCore().parseCtyDat(text);
   }
 
   function suggestMasterMatches(call, masterSet, limit = 5) {
@@ -9471,53 +9319,7 @@
   }
 
   function parseMasterDta(text) {
-    // MASTER.DTA can contain CRLF and potential binary junk; treat as bytes -> UTF-8 safely.
-    let data = text;
-    if (!(typeof text === 'string')) {
-      // Fallback: try to coerce ArrayBuffer/Uint8Array
-      try {
-        data = new TextDecoder('utf-8').decode(text);
-      } catch (e) {
-        console.warn('MASTER.DTA decode failed, using raw:', e);
-        data = '';
-      }
-    }
-    const set = new Set();
-    const lines = data.split(/\r?\n/);
-    for (const line of lines) {
-      const cleaned = line.replace(/\0/g, '').trim();
-      const call = normalizeCall(cleaned);
-      if (call) {
-        set.add(call);
-        const base = baseCall(call);
-        if (base) set.add(base);
-      }
-    }
-    // If the file is binary, line parsing yields too few calls; scan for call-like tokens.
-    if (set.size < 1000) {
-      let scan = data;
-      if (typeof text !== 'string') {
-        try {
-          scan = new TextDecoder('latin1').decode(text);
-        } catch (e) {
-          scan = data;
-        }
-      }
-      const re = /[A-Z0-9\/]{3,12}/g;
-      let m;
-      while ((m = re.exec(scan)) !== null) {
-        const token = m[0];
-        if (!/^\w/.test(token)) continue;
-        if (!/[0-9]/.test(token)) continue;
-        const call = normalizeCall(token);
-        if (call) {
-          set.add(call);
-          const base = baseCall(call);
-          if (base) set.add(base);
-        }
-      }
-    }
-    return set;
+    return getAnalysisCore().parseMasterDta(text);
   }
 
   const PORTABLE_CALL_SUFFIXES = new Set(['P', 'M', 'MM', 'AM', 'QRP']);
@@ -9732,646 +9534,7 @@
   }
 
   function buildDerived(qsos, context = {}) {
-    if (!qsos) return null;
-    const dupes = markDupes(qsos, context.analysisMode || ANALYSIS_MODE_DEFAULT);
-    const calls = new Set();
-    const bands = new Map();
-    const bandModes = new Map(); // band -> {cw,digital,phone,all,points,countries:Set}
-    const countries = new Map();
-    const continents = new Map();
-    const cqZones = new Map();
-    const hours = new Map(); // hour bucket (UTC) -> stats
-    const minutes = new Map(); // minute bucket (UTC) -> stats
-    const tenMinutes = new Map(); // 10-minute buckets
-    const countriesByMonth = new Map(); // country -> {total, months:Map}
-    const cqZonesByMonth = new Map(); // cqZone -> {total, months:Map, countries:Set}
-    const ituZonesByMonth = new Map(); // ituZone -> {total, months:Map, countries:Set}
-    const countriesByYear = new Map(); // country -> {total, years:Map}
-    const cqZonesByYear = new Map(); // cqZone -> {total, years:Map, countries:Set}
-    const ituZonesByYear = new Map(); // ituZone -> {total, years:Map, countries:Set}
-    const wpxPrefixes = new Map();
-    const wpxPrefixGroups = new Map();
-    const callsignLengths = new Map(); // len -> {callsigns:Set, qsos}
-    const notInMasterCalls = new Map(); // call -> {qsos, firstTs, lastTs}
-    const allCalls = new Map(); // call -> {qsos, bands:Set, firstTs, lastTs}
-    const hoursCountries = new Map(); // hour -> Map(country -> count)
-    const bandHourCountry = new Map(); // band -> Map(hour -> Map(country -> count))
-    const ops = new Map(); // operator -> {qsos, uniques:Set}
-    const structures = new Map(); // struct -> {callsigns:Set, qsos}
-    const ituZones = new Map();
-    const distanceSummary = makeDistanceSummary();
-    const headingSummary = makeHeadingSummary();
-    const headingByHour = new Map(); // hour -> Map(sector -> count)
-    const freqBins = new Map();
-    const possibleErrors = [];
-    const comments = new Set();
-    const fields = new Map(); // grid field (first two letters)
-    let minTs = null;
-    let maxTs = null;
-    let totalPoints = 0;
-
-    const station = deriveStation(qsos);
-    const contestMeta = deriveContestMeta(qsos);
-    const countryPrefixMap = buildCountryPrefixMap();
-
-    qsos.forEach((q) => {
-      if (q.call) calls.add(q.call);
-      if (typeof q.ts === 'number') {
-        if (minTs === null || q.ts < minTs) minTs = q.ts;
-        if (maxTs === null || q.ts > maxTs) maxTs = q.ts;
-      }
-      const bandKey = normalizeBand(q.band, Number.isFinite(q.freq) ? q.freq : null) || 'unknown';
-      if (bandKey && bandKey !== q.band) {
-        q.band = bandKey;
-      }
-      if (!bands.has(bandKey)) {
-        bands.set(bandKey, { qsos: 0, uniques: new Set(), dupes: 0 });
-      }
-      const b = bands.get(bandKey);
-      b.qsos += 1;
-      if (q.isDupe) b.dupes += 1;
-      if (q.call) b.uniques.add(q.call);
-
-      if (!bandModes.has(bandKey)) {
-        bandModes.set(bandKey, { band: bandKey, cw: 0, digital: 0, phone: 0, all: 0, points: 0, countries: new Set() });
-      }
-      const bm = bandModes.get(bandKey);
-      const bucket = modeBucket(q.mode);
-      if (bucket === 'CW') bm.cw += 1;
-      if (bucket === 'Digital') bm.digital += 1;
-      if (bucket === 'Phone') bm.phone += 1;
-      bm.all += 1;
-      if (Number.isFinite(q.points)) {
-        bm.points += q.points;
-        totalPoints += q.points;
-      }
-
-      const loggedCq = parseZone(q.raw?.CQZ ?? q.raw?.CQ_ZONE);
-      const loggedItu = parseZone(q.raw?.ITUZ ?? q.raw?.ITU_ZONE);
-      if (loggedCq != null) q.cqZone = loggedCq;
-      if (loggedItu != null) q.ituZone = loggedItu;
-
-      // Prefix/country enrich
-      const prefix = lookupPrefix(q.call);
-      const wpx = wpxPrefix(q.call);
-      if (wpx) q.wpxPrefix = wpx;
-      if (prefix) {
-        const cont = normalizeContinent(prefix.continent);
-        q.country = prefix.country;
-        if (q.cqZone == null) q.cqZone = prefix.cqZone;
-        if (q.ituZone == null) q.ituZone = prefix.ituZone;
-        q.continent = cont;
-        q.prefix = prefix.prefix;
-        if (prefix.country) {
-          if (!countries.has(prefix.country)) {
-            countries.set(prefix.country, {
-              qsos: 0,
-              uniques: new Set(),
-              bands: new Set(),
-              bandCounts: new Map(),
-              cw: 0,
-              digital: 0,
-              phone: 0,
-              firstTs: q.ts,
-              lastTs: q.ts,
-              continent: cont || null,
-              distSum: 0,
-              distCount: 0
-            });
-          }
-          const c = countries.get(prefix.country);
-          c.qsos += 1;
-          if (q.call) c.uniques.add(q.call);
-          if (q.band) {
-            c.bands.add(q.band);
-            c.bandCounts.set(q.band, (c.bandCounts.get(q.band) || 0) + 1);
-          }
-          if (bucket === 'CW') c.cw += 1;
-          if (bucket === 'Digital') c.digital += 1;
-          if (bucket === 'Phone') c.phone += 1;
-          if (bm) bm.countries.add(prefix.country);
-          if (typeof q.ts === 'number') {
-            if (c.firstTs == null || q.ts < c.firstTs) c.firstTs = q.ts;
-            if (c.lastTs == null || q.ts > c.lastTs) c.lastTs = q.ts;
-          }
-        }
-        if (cont) {
-          if (!continents.has(cont)) {
-            continents.set(cont, { qsos: 0, uniques: new Set(), bandCounts: new Map(), cw: 0, digital: 0, phone: 0 });
-          }
-          const c = continents.get(cont);
-          c.qsos += 1;
-          if (q.call) c.uniques.add(q.call);
-          if (q.band) c.bandCounts.set(q.band, (c.bandCounts.get(q.band) || 0) + 1);
-          if (bucket === 'CW') c.cw += 1;
-          if (bucket === 'Digital') c.digital += 1;
-          if (bucket === 'Phone') c.phone += 1;
-        }
-      }
-
-      if (q.cqZone) {
-        if (!cqZones.has(q.cqZone)) cqZones.set(q.cqZone, { qsos: 0, countries: new Set(), bandCounts: new Map() });
-        const z = cqZones.get(q.cqZone);
-        z.qsos += 1;
-        if (q.country) z.countries.add(q.country);
-        if (q.band) z.bandCounts.set(q.band, (z.bandCounts.get(q.band) || 0) + 1);
-      }
-      if (q.ituZone) {
-        if (!ituZones.has(q.ituZone)) ituZones.set(q.ituZone, { qsos: 0, countries: new Set(), bandCounts: new Map() });
-        const z = ituZones.get(q.ituZone);
-        z.qsos += 1;
-        if (q.country) z.countries.add(q.country);
-        if (q.band) z.bandCounts.set(q.band, (z.bandCounts.get(q.band) || 0) + 1);
-      }
-
-      // Master lookup (only if file successfully loaded and non-empty)
-      if (state.masterSet && state.masterSet.size > 0) {
-        const callKey = normalizeCall(q.call);
-        const base = baseCall(callKey);
-        q.inMaster = (callKey && state.masterSet.has(callKey)) || (base && state.masterSet.has(base));
-        if (!q.inMaster && q.call) {
-          if (!notInMasterCalls.has(q.call)) notInMasterCalls.set(q.call, { qsos: 0, firstTs: q.ts, lastTs: q.ts });
-          const n = notInMasterCalls.get(q.call);
-          n.qsos += 1;
-          if (typeof q.ts === 'number') {
-            if (n.firstTs == null || q.ts < n.firstTs) n.firstTs = q.ts;
-            if (n.lastTs == null || q.ts > n.lastTs) n.lastTs = q.ts;
-          }
-        }
-      }
-
-      // Hourly aggregation (UTC) excludes duplicate QSOs.
-      if (typeof q.ts === 'number' && !q.isDupe) {
-        const hourBucket = Math.floor(q.ts / 3600000); // ms to hours
-        if (!hours.has(hourBucket)) {
-          hours.set(hourBucket, { qsos: 0, byBand: new Map() });
-        }
-        const h = hours.get(hourBucket);
-        h.qsos += 1;
-        if (!h.byBand.has(bandKey)) h.byBand.set(bandKey, 0);
-        h.byBand.set(bandKey, h.byBand.get(bandKey) + 1);
-
-        const minuteBucket = Math.floor(q.ts / 60000);
-        if (!minutes.has(minuteBucket)) {
-          minutes.set(minuteBucket, { qsos: 0 });
-        }
-        minutes.get(minuteBucket).qsos += 1;
-
-        const tenBucket = Math.floor(q.ts / (60000 * 10));
-        if (!tenMinutes.has(tenBucket)) tenMinutes.set(tenBucket, { qsos: 0 });
-        tenMinutes.get(tenBucket).qsos += 1;
-
-        // Countries by time (overall + per band)
-        if (q.country) {
-          if (!hoursCountries.has(hourBucket)) hoursCountries.set(hourBucket, new Map());
-          const hc = hoursCountries.get(hourBucket);
-          hc.set(q.country, (hc.get(q.country) || 0) + 1);
-
-          if (!bandHourCountry.has(bandKey)) bandHourCountry.set(bandKey, new Map());
-          const bandMap = bandHourCountry.get(bandKey);
-          if (!bandMap.has(hourBucket)) bandMap.set(hourBucket, new Map());
-          const bhc = bandMap.get(hourBucket);
-          bhc.set(q.country, (bhc.get(q.country) || 0) + 1);
-        }
-      }
-
-      // WPX prefixes
-      if (wpx) {
-        if (!wpxPrefixes.has(wpx)) wpxPrefixes.set(wpx, { qsos: 0, uniques: new Set() });
-        const p = wpxPrefixes.get(wpx);
-        p.qsos += 1;
-        if (q.call) p.uniques.add(q.call);
-
-        const countryKey = prefix?.country || 'Unknown';
-        if (!wpxPrefixGroups.has(countryKey)) {
-          wpxPrefixGroups.set(countryKey, {
-            country: countryKey,
-            continent: prefix?.continent || '',
-            id: prefix?.country ? (countryPrefixMap.get(prefix.country) || '') : '',
-            prefixes: new Set()
-          });
-        }
-        wpxPrefixGroups.get(countryKey).prefixes.add(wpx);
-      }
-
-      // Callsign lengths
-      if (q.call) {
-        const len = q.call.length;
-        if (!callsignLengths.has(len)) callsignLengths.set(len, { callsigns: new Set(), qsos: 0 });
-        const lenEntry = callsignLengths.get(len);
-        lenEntry.qsos += 1;
-        lenEntry.callsigns.add(q.call);
-        const struct = classifyCallStructure(q.call);
-        if (!structures.has(struct)) structures.set(struct, { callsigns: new Set(), qsos: 0, example: q.call });
-        const structEntry = structures.get(struct);
-        structEntry.qsos += 1;
-        structEntry.callsigns.add(q.call);
-        if (!structEntry.example) structEntry.example = q.call;
-      }
-
-      // All calls summary
-      if (q.call) {
-        if (!allCalls.has(q.call)) allCalls.set(q.call, { qsos: 0, bands: new Set(), bandCounts: new Map(), firstTs: q.ts, lastTs: q.ts });
-        const a = allCalls.get(q.call);
-        a.qsos += 1;
-        if (q.band) {
-          a.bands.add(q.band);
-          a.bandCounts.set(q.band, (a.bandCounts.get(q.band) || 0) + 1);
-        }
-        if (typeof q.ts === 'number') {
-          if (a.firstTs == null || q.ts < a.firstTs) a.firstTs = q.ts;
-          if (a.lastTs == null || q.ts > a.lastTs) a.lastTs = q.ts;
-        }
-      }
-
-      // Operators
-      if (q.op) {
-        if (!ops.has(q.op)) ops.set(q.op, { qsos: 0, uniques: new Set() });
-        const o = ops.get(q.op);
-        o.qsos += 1;
-        if (q.call) o.uniques.add(q.call);
-      }
-
-      // Distance / heading if station known
-      if (station && station.lat != null && station.lon != null) {
-        const remote = deriveRemoteLatLon(q, prefix);
-        if (remote) {
-          const dist = haversineKm(station.lat, station.lon, remote.lat, remote.lon);
-          const brng = bearingDeg(station.lat, station.lon, remote.lat, remote.lon);
-          q.distance = dist;
-          q.bearing = brng;
-          distanceSummary.add(dist, q.band);
-          headingSummary.add(brng, q.band);
-          if (q.country && countries.has(q.country)) {
-            const c = countries.get(q.country);
-            c.distSum += dist;
-            c.distCount += 1;
-          }
-          // heading by hour bucketed into 30 deg sectors
-          if (typeof q.ts === 'number') {
-            const hourBucket = Math.floor(q.ts / 3600000);
-            if (!headingByHour.has(hourBucket)) headingByHour.set(hourBucket, new Map());
-            const hb = headingByHour.get(hourBucket);
-            const sector = Math.floor(brng / 30) * 30;
-            hb.set(sector, (hb.get(sector) || 0) + 1);
-          }
-        }
-      }
-
-      // Comments
-      const comment = q.raw?.COMMENT || q.raw?.NOTES;
-      if (comment) comments.add(comment);
-
-      // Fields (grid first two letters, fallback to lat/lon)
-      if (q.grid && q.grid.length >= 2) {
-        const field = q.grid.slice(0, 2).toUpperCase();
-        fields.set(field, (fields.get(field) || 0) + 1);
-      } else {
-        const remote = deriveRemoteLatLon(q, prefix);
-        if (remote) {
-          const field = latLonToField(remote.lat, remote.lon);
-          if (field) fields.set(field, (fields.get(field) || 0) + 1);
-        }
-      }
-
-      // Possible errors
-      const freqBand = Number.isFinite(q.freq) ? parseBandFromFreq(q.freq) : null;
-      if (!q.call) {
-        possibleErrors.push({ reason: 'Missing callsign', q });
-      } else if (classifyCallStructure(q.call) === 'other') {
-        possibleErrors.push({ reason: 'Unrecognized callsign pattern', q });
-      }
-      if (!prefix) {
-        possibleErrors.push({ reason: 'Prefix not found in cty.dat', q });
-      }
-      if (q.ts == null) {
-        possibleErrors.push({ reason: 'Invalid/missing time', q });
-      }
-      if (q.band && !SUPPORTED_BANDS.has(q.band)) {
-        const bandLabel = formatBandLabel(q.band) || q.band;
-        possibleErrors.push({ reason: `Unexpected band value "${bandLabel}"`, q });
-      }
-      if (Number.isFinite(q.freq)) {
-        if (!freqBand) {
-          possibleErrors.push({ reason: `Frequency ${q.freq} MHz is outside supported bands`, q });
-        } else if (q.band && q.band !== freqBand) {
-          possibleErrors.push({ reason: `Band/freq mismatch: band ${formatBandLabel(q.band)}, freq ${q.freq} MHz (${formatBandLabel(freqBand)})`, q });
-        }
-        const bin = Math.floor(q.freq * 10) / 10;
-        freqBins.set(bin, (freqBins.get(bin) || 0) + 1);
-      }
-      if (prefix) {
-        if (prefix.cqZone && loggedCq != null && loggedCq !== prefix.cqZone) {
-          possibleErrors.push({ reason: `CQ zone mismatch: logged ${loggedCq}, prefix ${prefix.cqZone}`, q });
-        }
-        if (prefix.ituZone && loggedItu != null && loggedItu !== prefix.ituZone) {
-          possibleErrors.push({ reason: `ITU zone mismatch: logged ${loggedItu}, prefix ${prefix.ituZone}`, q });
-        }
-      }
-    });
-
-    const bandSummary = [];
-    bands.forEach((v, k) => {
-      bandSummary.push({
-        band: k,
-        qsos: v.qsos,
-        dupes: v.dupes,
-        uniques: v.uniques.size
-      });
-    });
-    bandSummary.sort((a, b) => {
-      const ai = bandOrderIndex(a.band);
-      const bi = bandOrderIndex(b.band);
-      if (ai !== bi) return ai - bi;
-      return (a.band || '').localeCompare(b.band || '');
-    });
-
-    const bandModeSummary = Array.from(bandModes.values()).map((b) => ({
-      band: b.band,
-      cw: b.cw,
-      digital: b.digital,
-      phone: b.phone,
-      all: b.all,
-      countries: b.countries.size,
-      points: b.points
-    })).sort((a, b) => {
-      const ai = bandOrderIndex(a.band);
-      const bi = bandOrderIndex(b.band);
-      if (ai !== bi) return ai - bi;
-      return a.band.localeCompare(b.band);
-    });
-
-    const countrySummary = [];
-    countries.forEach((v, k) => {
-      countrySummary.push({
-        country: k,
-        qsos: v.qsos,
-        uniques: v.uniques.size,
-        bands: sortBands(Array.from(v.bands)),
-        bandCounts: v.bandCounts,
-        cw: v.cw,
-        digital: v.digital,
-        phone: v.phone,
-        continent: v.continent,
-        distanceAvg: v.distCount ? v.distSum / v.distCount : null,
-        prefixCode: countryPrefixMap.get(k) || '',
-        firstTs: v.firstTs,
-        lastTs: v.lastTs
-      });
-    });
-    const continentOrder = ['NA', 'SA', 'EU', 'AF', 'AS', 'OC'];
-    countrySummary.sort((a, b) => {
-      const ai = continentOrder.indexOf((a.continent || '').toUpperCase());
-      const bi = continentOrder.indexOf((b.continent || '').toUpperCase());
-      if (ai !== bi) return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
-      return (a.prefixCode || a.country).localeCompare(b.prefixCode || b.country);
-    });
-
-    const continentSummary = [];
-    continents.forEach((v, k) => {
-      continentSummary.push({
-        continent: k,
-        qsos: v.qsos,
-        uniques: v.uniques.size,
-        bandCounts: v.bandCounts,
-        cw: v.cw,
-        digital: v.digital,
-        phone: v.phone
-      });
-    });
-    continentSummary.sort((a, b) => {
-      const ai = continentOrder.indexOf((a.continent || '').toUpperCase());
-      const bi = continentOrder.indexOf((b.continent || '').toUpperCase());
-      if (ai !== bi) return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
-      return (a.continent || '').localeCompare(b.continent || '');
-    });
-
-	    const cqZoneSummary = [];
-	    cqZones.forEach((v, k) => {
-	      cqZoneSummary.push({
-	        cqZone: k,
-	        qsos: v.qsos,
-	        countries: v.countries.size,
-	        bandCounts: v.bandCounts
-	      });
-	    });
-	    cqZoneSummary.sort((a, b) => a.cqZone - b.cqZone);
-
-	    const ituZoneSummary = [];
-	    ituZones.forEach((v, k) => {
-	      ituZoneSummary.push({
-	        ituZone: k,
-	        qsos: v.qsos,
-	        countries: v.countries.size,
-	        bandCounts: v.bandCounts
-	      });
-	    });
-	    ituZoneSummary.sort((a, b) => a.ituZone - b.ituZone);
-
-    // Build hourly series sorted by time
-    const hourSeries = Array.from(hours.entries()).sort((a, b) => a[0] - b[0]).map(([hour, v]) => {
-      const bandsObj = {};
-      v.byBand.forEach((count, band) => bandsObj[band] = count);
-      return { hour, qsos: v.qsos, bands: bandsObj };
-    });
-
-    // Minute series
-    const minuteSeries = Array.from(minutes.entries()).sort((a, b) => a[0] - b[0]).map(([minute, v]) => ({
-      minute,
-      qsos: v.qsos
-    }));
-
-    const breakSummary = computeBreakSummary(minutes, 60);
-
-    const tenMinuteSeries = Array.from(tenMinutes.entries()).sort((a, b) => a[0] - b[0]).map(([bucket, v]) => ({
-      bucket,
-      qsos: v.qsos
-    }));
-
-    // Prefix summary
-    const prefixSummary = [];
-    wpxPrefixes.forEach((v, k) => {
-      prefixSummary.push({
-        prefix: k,
-        qsos: v.qsos,
-        uniques: v.uniques.size
-      });
-    });
-    prefixSummary.sort((a, b) => b.qsos - a.qsos || a.prefix.localeCompare(b.prefix));
-
-    // Callsign length summary
-    const callsignLengthSummary = Array.from(callsignLengths.entries()).map(([len, info]) => ({
-      len,
-      callsigns: info.callsigns.size,
-      qsos: info.qsos
-    }))
-      .sort((a, b) => a.len - b.len);
-
-    // Not in master list
-    const notInMasterList = Array.from(notInMasterCalls.entries()).map(([call, info]) => ({
-      call,
-      qsos: info.qsos,
-      firstTs: info.firstTs,
-      lastTs: info.lastTs
-    })).sort((a, b) => b.qsos - a.qsos || a.call.localeCompare(b.call));
-
-    const allCallsList = Array.from(allCalls.entries()).map(([call, info]) => ({
-      call,
-      qsos: info.qsos,
-      bands: Array.from(info.bands).sort(),
-      bandCounts: info.bandCounts,
-      firstTs: info.firstTs,
-      lastTs: info.lastTs
-    })).sort((a, b) => a.call.localeCompare(b.call));
-
-    const callCountMap = new Map();
-    allCalls.forEach((info, call) => callCountMap.set(call, info.qsos));
-    qsos.forEach((q) => {
-      if (!q || !q.call) return;
-      q.callCount = callCountMap.get(q.call) || 0;
-    });
-
-    let operatorsSummary = Array.from(ops.entries()).map(([op, info]) => ({
-      op,
-      qsos: info.qsos,
-      uniques: info.uniques.size
-    })).sort((a, b) => b.qsos - a.qsos || a.op.localeCompare(b.op));
-    const headerOperators = parseOperatorsList(contestMeta?.operators);
-    if (headerOperators.length) {
-      const stationNorm = normalizeCall(contestMeta?.stationCallsign || '');
-      const opKeys = Array.from(ops.keys()).map((op) => normalizeCall(op)).filter(Boolean);
-      const onlyStation = opKeys.length === 0 || (opKeys.length === 1 && stationNorm && opKeys[0] === stationNorm);
-      if (onlyStation) {
-        operatorsSummary = headerOperators.map((op) => ({ op, qsos: 0, uniques: 0 }));
-      }
-    }
-
-    const countryMonthBuckets = buildCountryMonthBuckets(qsos);
-    const cqZoneMonthBuckets = buildZoneMonthBuckets(qsos, 'cq');
-    const ituZoneMonthBuckets = buildZoneMonthBuckets(qsos, 'itu');
-    const countryYearBuckets = buildCountryYearBuckets(qsos);
-    const cqZoneYearBuckets = buildZoneYearBuckets(qsos, 'cq');
-    const ituZoneYearBuckets = buildZoneYearBuckets(qsos, 'itu');
-    const monthColumns = new Set();
-    const yearColumns = new Set();
-    for (const [, data] of countryMonthBuckets.entries()) {
-      for (const key of data.months.keys()) monthColumns.add(key);
-    }
-    for (const [zone, data] of cqZoneMonthBuckets.entries()) {
-      cqZonesByMonth.set(zone, data);
-      for (const key of data.months.keys()) monthColumns.add(key);
-    }
-    for (const [zone, data] of ituZoneMonthBuckets.entries()) {
-      ituZonesByMonth.set(zone, data);
-      for (const key of data.months.keys()) monthColumns.add(key);
-    }
-    for (const [country, data] of countryMonthBuckets.entries()) {
-      countriesByMonth.set(country, data);
-    }
-    for (const [zone, data] of cqZoneYearBuckets.entries()) {
-      cqZonesByYear.set(zone, data);
-      for (const key of data.years.keys()) yearColumns.add(key);
-    }
-    for (const [zone, data] of ituZoneYearBuckets.entries()) {
-      ituZonesByYear.set(zone, data);
-      for (const key of data.years.keys()) yearColumns.add(key);
-    }
-    for (const [country, data] of countryYearBuckets.entries()) {
-      countriesByYear.set(country, data);
-      for (const key of data.years.keys()) yearColumns.add(key);
-    }
-
-    const structureSummary = Array.from(structures.entries()).map(([struct, info]) => ({
-      struct,
-      example: info.example,
-      callsigns: info.callsigns.size,
-      qsos: info.qsos
-    })).sort((a, b) => b.qsos - a.qsos || a.struct.localeCompare(b.struct));
-
-    const headingByHourSeries = Array.from(headingByHour.entries()).sort((a, b) => a[0] - b[0]).map(([hour, m]) => {
-      const sectors = Array.from(m.entries()).sort((a, b) => a[0] - b[0]).map(([sector, count]) => ({ sector, count }));
-      return { hour, sectors };
-    });
-
-    const frequencySummary = Array.from(freqBins.entries()).sort((a, b) => a[0] - b[0]).map(([freq, count]) => ({
-      freq,
-      count
-    }));
-
-    const fieldsSummary = Array.from(fields.entries()).map(([field, count]) => ({ field, count }))
-      .sort((a, b) => b.count - a.count || a.field.localeCompare(b.field));
-
-    const scoring = computeContestScoringSummary(qsos, contestMeta, {
-      logFile: context?.logFile || null,
-      sourcePath: context?.sourcePath || ''
-    });
-    const effectivePointsByIndex = (scoring?.effectivePointsSource === 'computed' && Array.isArray(scoring.computedPointsByIndex) && scoring.computedPointsByIndex.length === qsos.length)
-      ? scoring.computedPointsByIndex
-      : qsos.map((q) => (Number.isFinite(q?.points) ? q.points : 0));
-    const hourPoints = new Map();
-    const minutePoints = new Map();
-    qsos.forEach((q, idx) => {
-      if (!Number.isFinite(q?.ts)) return;
-      if (q?.isDupe) return;
-      const points = Number(effectivePointsByIndex[idx] || 0);
-      if (!Number.isFinite(points)) return;
-      const hourBucket = Math.floor(q.ts / 3600000);
-      const minuteBucket = Math.floor(q.ts / 60000);
-      hourPoints.set(hourBucket, (hourPoints.get(hourBucket) || 0) + points);
-      minutePoints.set(minuteBucket, (minutePoints.get(minuteBucket) || 0) + points);
-    });
-    const hourPointSeries = Array.from(hourPoints.entries()).sort((a, b) => a[0] - b[0]).map(([hour, points]) => ({ hour, points }));
-    const minutePointSeries = Array.from(minutePoints.entries()).sort((a, b) => a[0] - b[0]).map(([minute, points]) => ({ minute, points }));
-    const effectivePointsTotal = effectivePointsByIndex.reduce((sum, p) => sum + (Number.isFinite(p) ? p : 0), 0);
-    const monthColumnList = Array.from(monthColumns).sort((a, b) => a.localeCompare(b));
-    const yearColumnList = Array.from(yearColumns).sort((a, b) => Number(a) - Number(b));
-
-    return {
-      dupes,
-      countriesByYear,
-      countriesByMonth,
-      cqZonesByYear,
-      cqZonesByMonth,
-      ituZonesByYear,
-      ituZonesByMonth,
-      yearColumns: yearColumnList,
-      monthColumns: monthColumnList,
-      uniqueCallsCount: calls.size,
-      bandSummary,
-      bandModeSummary,
-      countrySummary,
-      continentSummary,
-      cqZoneSummary,
-      ituZoneSummary,
-      hourSeries,
-      minuteSeries,
-      hourPointSeries,
-      minutePointSeries,
-      tenMinuteSeries,
-      prefixSummary,
-      prefixGroups: wpxPrefixGroups,
-      callsignLengthSummary,
-      notInMasterList,
-      allCallsList,
-      hoursCountries,
-      bandHourCountry,
-      operatorsSummary,
-      structureSummary,
-      distanceSummary: distanceSummary.export(),
-      headingSummary: headingSummary.export(),
-      headingByHourSeries,
-      frequencySummary,
-      fieldsSummary,
-      station,
-      contestMeta,
-      scoring,
-      comments: Array.from(comments),
-      possibleErrors,
-      timeRange: { minTs, maxTs },
-      breakSummary,
-      totalPoints,
-      effectivePointsTotal
-    };
+    return getAnalysisCore().buildDerived(qsos, context, buildAnalysisResourcesPayload());
   }
 
   function runDupeModeRegressionChecks() {
@@ -12021,7 +11184,7 @@
         return;
       }
       const name = DEMO_ARCHIVE_PATH.split('/').pop() || 'demo.log';
-      applyLoadedLogToSlot(slotId, result.text, name, result.text.length, 'Demo', statusEl, DEMO_ARCHIVE_PATH);
+      await applyLoadedLogToSlot(slotId, result.text, name, result.text.length, 'Demo', statusEl, DEMO_ARCHIVE_PATH);
       if (statusEl && result.source) statusEl.title = result.source;
       showOverlayNotice('Demo log loaded! Explore the reports using the menu on the left.', 2250);
     };
@@ -23402,7 +22565,7 @@
         return;
       }
       try {
-        applyLoadedLogToSlot(slotId, text, name, text.length, 'Archive', statusTarget, path);
+        await applyLoadedLogToSlot(slotId, text, name, text.length, 'Archive', statusTarget, path);
         statusEl.textContent = `Loaded ${name} from archive.`;
         resultsEl.querySelectorAll('button').forEach((btn) => btn.disabled = false);
         if (source) statusEl.title = source;
@@ -23515,7 +22678,9 @@
     syncPeriodFiltersWithAvailableData();
     rebuildReports();
     if (state.qsoData || state.compareSlots.some((slot) => slot && slot.qsoData)) {
-      recomputeDerived('analysisMode');
+      recomputeDerived('analysisMode').catch((err) => {
+        console.warn('Analysis-mode rederive failed:', err);
+      });
       return;
     }
     renderActiveReport();
