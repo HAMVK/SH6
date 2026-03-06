@@ -158,7 +158,21 @@
     [COMPARE_SCORE_MODE_CLAIMED]: 'Claimed score',
     [COMPARE_SCORE_MODE_LOGGED]: 'Logged points'
   });
-  const RETAINED_REPORT_IDS = new Set(['log', 'all_callsigns', 'not_in_master', 'session', 'competitor_coach', 'agent_briefing']);
+  const RETAINED_REPORT_IDS = new Set([
+    'log',
+    'all_callsigns',
+    'not_in_master',
+    'session',
+    'competitor_coach',
+    'agent_briefing',
+    'dupes',
+    'countries',
+    'continents',
+    'zones_cq',
+    'zones_itu',
+    'callsign_length',
+    'callsign_structure'
+  ]);
   const COMPARE_TIME_LOCK_REPORTS = new Set([
     'qs_by_hour_sheet',
     'points_by_hour_sheet',
@@ -1755,6 +1769,7 @@
   let engineTaskWorker = null;
   let engineTaskSeq = 0;
   let derivedRecomputeSeq = 0;
+  let staticVirtualTableRenderDepth = 0;
   const engineTaskResolvers = new Map();
 
   const base64UrlEncode = (value) => {
@@ -2081,6 +2096,20 @@
         return renderCompetitorCoachContent();
       case 'agent_briefing':
         return renderAgentBriefingContent();
+      case 'dupes':
+        return renderDupesContent();
+      case 'countries':
+        return renderCountriesContent();
+      case 'continents':
+        return renderContinentsContent();
+      case 'zones_cq':
+        return renderCqZonesContent();
+      case 'zones_itu':
+        return renderItuZonesContent();
+      case 'callsign_length':
+        return renderCallsignLengthContent();
+      case 'callsign_structure':
+        return renderCallsignStructureContent();
       default:
         return '';
     }
@@ -2138,6 +2167,60 @@
           tbody.innerHTML = model.rows.length ? model.rows.join('') : model.emptyHtml;
         }
       });
+  }
+
+  function joinTableRows(rows) {
+    if (Array.isArray(rows)) return rows.join('');
+    return String(rows || '');
+  }
+
+  function withStaticVirtualTableRender(fn) {
+    staticVirtualTableRenderDepth += 1;
+    try {
+      return fn();
+    } finally {
+      staticVirtualTableRenderDepth = Math.max(0, staticVirtualTableRenderDepth - 1);
+    }
+  }
+
+  function renderRetainedVirtualTable(reportId, options = {}) {
+    const key = String(reportId || '').split('::')[0];
+    const rows = Array.isArray(options.rows) ? options.rows : [];
+    const columnCount = Math.max(1, Number(options.columnCount) || 1);
+    const emptyHtml = options.emptyHtml == null ? '' : String(options.emptyHtml);
+    const tableClass = options.tableClass || 'mtc';
+    const tableStyle = options.tableStyle || 'margin-top:5px;margin-bottom:10px;text-align:right;';
+    const colgroup = options.colgroupHtml || '';
+    const header = options.headerHtml || '';
+    const footer = options.footerHtml ? `<tfoot>${options.footerHtml}</tfoot>` : '';
+    if (staticVirtualTableRenderDepth > 0) {
+      const body = rows.length ? joinTableRows(rows) : emptyHtml;
+      return `
+        <table class="${escapeAttr(tableClass)}" style="${escapeAttr(tableStyle)}">
+          ${colgroup}
+          ${header}
+          <tbody>${body}</tbody>
+          ${footer}
+        </table>
+      `;
+    }
+    setRetainedReportModel(key, {
+      rows,
+      rowHeight: Math.max(20, Number(options.rowHeight) || 28),
+      overscan: Math.max(4, Number(options.overscan) || 10),
+      colspan: columnCount,
+      emptyHtml
+    });
+    return `
+      <div class="virtual-table-shell" data-virtual-table="${escapeAttr(key)}">
+        <table class="${escapeAttr(tableClass)}" style="${escapeAttr(tableStyle)}">
+          ${colgroup}
+          ${header}
+          <tbody data-virtual-body="${escapeAttr(key)}"></tbody>
+          ${footer}
+        </table>
+      </div>
+    `;
   }
 
   function buildSlotSnapshot(source) {
@@ -12139,7 +12222,7 @@
     if (report.id === 'map_view') {
       return '<p>Map view is interactive and not included in exports. Use the in-app map or KMZ files.</p>';
     }
-    const html = renderReport(report);
+    const html = withStaticVirtualTableRender(() => renderReport(report));
     return stripLinks(html);
   }
 
@@ -12306,9 +12389,9 @@
     if (cancelBtn) cancelBtn.addEventListener('click', close);
   }
 
-  function renderDupes() {
+  function renderDupesContent() {
     if (!state.derived) return renderPlaceholder({ id: 'dupes', title: 'Dupes' });
-    const rows = state.derived.dupes.map((q, idx) => {
+    const rowList = state.derived.dupes.map((q, idx) => {
       const time = escapeHtml(q.time || '');
       const band = escapeHtml(formatBandLabel(q.band || ''));
       const mode = escapeHtml(q.mode || '');
@@ -12322,16 +12405,24 @@
         <td><a href="#" class="log-call" data-call="${callAttr}">${call}</a></td>
       </tr>
     `;
-    }).join('');
+    });
     const count = state.derived.dupes.length;
     if (!count) return '<p>No duplicate QSOs detected.</p>';
     return `
       <p>Duplicate QSOs: ${formatNumberSh6(count)}</p>
-      <table class="mtc" style="margin-top:5px;margin-bottom:10px;text-align:right;">
-        <tr class="thc"><th>Time</th><th>Band</th><th>Mode</th><th>Call</th></tr>
-        ${rows}
-      </table>
+      ${renderRetainedVirtualTable('dupes', {
+        rows: rowList,
+        rowHeight: 28,
+        overscan: 10,
+        columnCount: 4,
+        emptyHtml: '<tr class="td1"><td colspan="4">No duplicate QSOs detected.</td></tr>',
+        headerHtml: '<tr class="thc"><th>Time</th><th>Band</th><th>Mode</th><th>Call</th></tr>'
+      })}
     `;
+  }
+
+  function renderDupes() {
+    return renderRetainedReportShell('dupes', renderDupesContent());
   }
 
   function renderExportPage() {
@@ -16155,7 +16246,7 @@
         <td class="tac">${mapLink}</td>
       </tr>
     `;
-    }).join('');
+    });
   }
 
   function renderCountriesTable(rows) {
@@ -16179,7 +16270,7 @@
           ${bandHeaders}
           <th>All</th><th>Unique</th><th>%</th>
         </tr>
-        ${rows}
+        ${joinTableRows(rows)}
         ${mapAllFooter(bandCols.length + 13)}
       </table>
     `;
@@ -16237,12 +16328,43 @@
     `;
   }
 
-  function renderCountries() {
+  function renderCountriesContent() {
     if (!state.derived) return renderPlaceholder({ id: 'countries', title: 'Countries' });
     const totalQsos = state.qsoData?.qsos.length || 0;
     const list = buildCountryListFromDerived(state.derived);
     const rows = renderCountryRowsFromList(list, state.derived, totalQsos);
-    return renderCountriesTable(rows);
+    const bandCols = getDisplayBandList();
+    const qsoCols = 3 + bandCols.length + 3;
+    const bandHeaders = bandCols.map((b) => `<th>${escapeHtml(formatBandLabel(b))}</th>`).join('');
+    return renderRetainedVirtualTable('countries', {
+      rows,
+      rowHeight: 28,
+      overscan: 12,
+      columnCount: bandCols.length + 13,
+      emptyHtml: `<tr class="td1"><td colspan="${bandCols.length + 13}">No country data available.</td></tr>`,
+      colgroupHtml: `<colgroup><col width="40px" span="3" align="center"/><col align="left"/><col span="${bandCols.length + 9}" width="40px" align="center"/></colgroup>`,
+      headerHtml: `
+        <tr class="thc">
+          <th rowspan="2">#</th>
+          <th rowspan="2">Cont.</th>
+          <th colspan="2" rowspan="2">Country</th>
+          <th rowspan="2">Distance, km</th>
+          <th colspan="${qsoCols}">QSOs</th>
+          <th rowspan="2">Bands</th>
+          <th rowspan="2">Map</th>
+        </tr>
+        <tr class="thc">
+          <th>CW</th><th>DIG</th><th>SSB</th>
+          ${bandHeaders}
+          <th>All</th><th>Unique</th><th>%</th>
+        </tr>
+      `,
+      footerHtml: mapAllFooter(bandCols.length + 13)
+    });
+  }
+
+  function renderCountries() {
+    return renderRetainedReportShell('countries', renderCountriesContent());
   }
 
   function buildContinentListFromDerived(derived) {
@@ -16307,7 +16429,7 @@
           <td class="tac">${mapLink}</td>
         </tr>
       `;
-    }).join('');
+    });
   }
 
   function renderContinentsTable(rows) {
@@ -16319,18 +16441,37 @@
         <colgroup><col width="40px"/><col width="30px"/><col width="200px"/><col span="${qsoCols}" width="120px"/><col width="56px"/></colgroup>
         <tr class="thc"><th rowspan="2">#</th><th colspan="2" rowspan="2">Continent</th><th colspan="${qsoCols}">QSOs</th><th rowspan="2">Map</th></tr>
         <tr class="thc">${bandHeaders}<th>All</th><th>%</th><th>CW</th><th>Digital</th><th>Phone</th></tr>
-        ${rows}
+        ${joinTableRows(rows)}
         ${mapAllFooter(bandCols.length + 9)}
       </table>
     `;
   }
 
-  function renderContinents() {
+  function renderContinentsContent() {
     if (!state.derived) return renderPlaceholder({ id: 'continents', title: 'Continents' });
     const totalQs = state.qsoData?.qsos?.length || 0;
     const list = buildContinentListFromDerived(state.derived);
     const rows = renderContinentsRowsFromList(list, state.derived, totalQs);
-    return renderContinentsTable(rows);
+    const bandCols = getDisplayBandList();
+    const qsoCols = bandCols.length + 5;
+    const bandHeaders = bandCols.map((b) => `<th>${escapeHtml(formatBandLabel(b))}</th>`).join('');
+    return renderRetainedVirtualTable('continents', {
+      rows,
+      rowHeight: 28,
+      overscan: 10,
+      columnCount: bandCols.length + 9,
+      emptyHtml: `<tr class="td1"><td colspan="${bandCols.length + 9}">No continent data available.</td></tr>`,
+      colgroupHtml: `<colgroup><col width="40px"/><col width="30px"/><col width="200px"/><col span="${qsoCols}" width="120px"/><col width="56px"/></colgroup>`,
+      headerHtml: `
+        <tr class="thc"><th rowspan="2">#</th><th colspan="2" rowspan="2">Continent</th><th colspan="${qsoCols}">QSOs</th><th rowspan="2">Map</th></tr>
+        <tr class="thc">${bandHeaders}<th>All</th><th>%</th><th>CW</th><th>Digital</th><th>Phone</th></tr>
+      `,
+      footerHtml: mapAllFooter(bandCols.length + 9)
+    });
+  }
+
+  function renderContinents() {
+    return renderRetainedReportShell('continents', renderContinentsContent());
   }
 
   function buildZoneListFromDerived(derived, field) {
@@ -16449,7 +16590,7 @@
         <td class="tac">${mapLink}</td>
       </tr>
     `;
-    }).join('');
+    });
   }
 
   function renderZonesTable(rows) {
@@ -16458,24 +16599,52 @@
     return `
       <table class="mtc" style="margin-top:5px;margin-bottom:10px;text-align:right;">
         <tr class="thc"><th>Zone</th><th>DXCC</th>${bandHeaders}<th>All</th><th>Map</th></tr>
-        ${rows}
+        ${joinTableRows(rows)}
         ${mapAllFooter(bandCols.length + 4)}
       </table>
     `;
   }
 
-  function renderCqZones() {
+  function renderCqZonesContent() {
     if (!state.derived) return renderPlaceholder({ id: 'zones_cq', title: 'CQ zones' });
     const list = buildZoneListFromDerived(state.derived, 'cq');
     const rows = renderZoneRowsFromList(list, state.derived, 'cq');
-    return renderZonesTable(rows);
+    const bandCols = getDisplayBandList();
+    const bandHeaders = bandCols.map((b) => `<th>${escapeHtml(formatBandLabel(b))}</th>`).join('');
+    return renderRetainedVirtualTable('zones_cq', {
+      rows,
+      rowHeight: 28,
+      overscan: 10,
+      columnCount: bandCols.length + 4,
+      emptyHtml: `<tr class="td1"><td colspan="${bandCols.length + 4}">No CQ zone data available.</td></tr>`,
+      headerHtml: `<tr class="thc"><th>Zone</th><th>DXCC</th>${bandHeaders}<th>All</th><th>Map</th></tr>`,
+      footerHtml: mapAllFooter(bandCols.length + 4)
+    });
   }
 
-  function renderItuZones() {
+  function renderCqZones() {
+    return renderRetainedReportShell('zones_cq', renderCqZonesContent());
+  }
+
+  function renderItuZonesContent() {
     if (!state.derived) return renderPlaceholder({ id: 'zones_itu', title: 'ITU zones' });
     const list = buildZoneListFromDerived(state.derived, 'itu');
     const rows = renderZoneRowsFromList(list, state.derived, 'itu');
-    return renderZonesTable(rows);
+    const bandCols = getDisplayBandList();
+    const bandHeaders = bandCols.map((b) => `<th>${escapeHtml(formatBandLabel(b))}</th>`).join('');
+    return renderRetainedVirtualTable('zones_itu', {
+      rows,
+      rowHeight: 28,
+      overscan: 10,
+      columnCount: bandCols.length + 4,
+      emptyHtml: `<tr class="td1"><td colspan="${bandCols.length + 4}">No ITU zone data available.</td></tr>`,
+      headerHtml: `<tr class="thc"><th>Zone</th><th>DXCC</th>${bandHeaders}<th>All</th><th>Map</th></tr>`,
+      footerHtml: mapAllFooter(bandCols.length + 4)
+    });
+  }
+
+  function renderItuZones() {
+    return renderRetainedReportShell('zones_itu', renderItuZonesContent());
   }
 
   function renderZoneMonthRowsFromList(list, derived, field, monthColumns) {
@@ -17556,25 +17725,36 @@
         <td>${qsoLink}</td>
         <td>${qsoPct}</td>
       </tr>
-    `}).join('');
+    `});
   }
 
   function renderCallsignLengthTable(rows) {
     return `
       <table class="mtc" style="margin-top:5px;margin-bottom:10px;text-align:right;">
         <tr class="thc"><th>Length</th><th>Callsigns</th><th>%</th><th>QSOs</th><th>%</th></tr>
-        ${rows}
+        ${joinTableRows(rows)}
       </table>
     `;
   }
 
-  function renderCallsignLength() {
+  function renderCallsignLengthContent() {
     if (!state.derived) return renderPlaceholder({ id: 'callsign_length', title: 'Callsign length' });
     const totalCalls = state.derived.uniqueCallsCount || 0;
     const totalQsos = state.qsoData?.qsos.length || 0;
     const list = buildCallsignLengthList(state.derived);
     const rows = renderCallsignLengthRowsFromList(list, state.derived, totalCalls, totalQsos);
-    return renderCallsignLengthTable(rows);
+    return renderRetainedVirtualTable('callsign_length', {
+      rows,
+      rowHeight: 28,
+      overscan: 8,
+      columnCount: 5,
+      emptyHtml: '<tr class="td1"><td colspan="5">No callsign-length data available.</td></tr>',
+      headerHtml: '<tr class="thc"><th>Length</th><th>Callsigns</th><th>%</th><th>QSOs</th><th>%</th></tr>'
+    });
+  }
+
+  function renderCallsignLength() {
+    return renderRetainedReportShell('callsign_length', renderCallsignLengthContent());
   }
 
   function buildStructureList(derived) {
@@ -17619,25 +17799,36 @@
         <td>${qsoLink}</td>
         <td>${qsoPct}</td>
       </tr>
-    `}).join('');
+    `});
   }
 
   function renderCallsignStructureTable(rows) {
     return `
       <table class="mtc" style="margin-top:5px;margin-bottom:10px;text-align:right;">
         <tr class="thc"><th>#</th><th>Callsign structure, C - char, D - digit</th><th>Example</th><th>Callsigns</th><th>%</th><th>QSOs</th><th>%</th></tr>
-        ${rows}
+        ${joinTableRows(rows)}
       </table>
     `;
   }
 
-  function renderCallsignStructure() {
+  function renderCallsignStructureContent() {
     if (!state.derived) return renderPlaceholder({ id: 'callsign_structure', title: 'Callsign structure' });
     const totalCalls = state.derived.uniqueCallsCount || 0;
     const totalQsos = state.qsoData?.qsos.length || 0;
     const list = buildStructureList(state.derived);
     const rows = renderCallsignStructureRowsFromList(list, state.derived, totalCalls, totalQsos);
-    return renderCallsignStructureTable(rows);
+    return renderRetainedVirtualTable('callsign_structure', {
+      rows,
+      rowHeight: 28,
+      overscan: 8,
+      columnCount: 7,
+      emptyHtml: '<tr class="td1"><td colspan="7">No callsign-structure data available.</td></tr>',
+      headerHtml: '<tr class="thc"><th>#</th><th>Callsign structure, C - char, D - digit</th><th>Example</th><th>Callsigns</th><th>%</th><th>QSOs</th><th>%</th></tr>'
+    });
+  }
+
+  function renderCallsignStructure() {
+    return renderRetainedReportShell('callsign_structure', renderCallsignStructureContent());
   }
 
   function buildDistanceList(derived) {
@@ -17890,13 +18081,6 @@
       </tr>
     `;
     });
-    setRetainedReportModel('all_callsigns', {
-      rows: rowList,
-      rowHeight: 28,
-      overscan: 12,
-      colspan: bandCols.length + 3,
-      emptyHtml: `<tr class="td1"><td colspan="${bandCols.length + 3}">No callsigns available.</td></tr>`
-    });
     const filterNote = countryFilter
       ? `<p>Country filter: <b>${escapeHtml(countryFilter)}</b> (<a href="#" class="all-calls-clear-country">clear</a>)</p>`
       : '';
@@ -17905,12 +18089,14 @@
     return `
       ${filterNote}
       ${note}
-      <div class="virtual-table-shell" data-virtual-table="all_callsigns">
-        <table class="mtc" style="margin-top:5px;margin-bottom:10px;text-align:right;">
-          <tr class="thc"><th>#</th><th>Callsign</th>${bandHeaders}<th>All</th></tr>
-          <tbody data-virtual-body="all_callsigns"></tbody>
-        </table>
-      </div>
+      ${renderRetainedVirtualTable('all_callsigns', {
+        rows: rowList,
+        rowHeight: 28,
+        overscan: 12,
+        columnCount: bandCols.length + 3,
+        emptyHtml: `<tr class="td1"><td colspan="${bandCols.length + 3}">No callsigns available.</td></tr>`,
+        headerHtml: `<tr class="thc"><th>#</th><th>Callsign</th>${bandHeaders}<th>All</th></tr>`
+      })}
     `;
   }
 
@@ -17942,13 +18128,6 @@
       </tr>
     `;
     });
-    setRetainedReportModel('not_in_master', {
-      rows: rowList,
-      rowHeight: 28,
-      overscan: 10,
-      colspan: 5,
-      emptyHtml: '<tr class="td1"><td colspan="5">All calls found in master.</td></tr>'
-    });
     const nav = list.length > pageSize ? `
       <div class="not-master-controls">
         <button type="button" class="not-master-btn" data-dir="prev" ${page <= 0 ? 'disabled' : ''}>&#9664; Prev ${formatNumberSh6(pageSize)}</button>
@@ -17960,12 +18139,14 @@
       <p>Calls not found in MASTER.DTA: ${formatNumberSh6(count)}</p>
       ${note}
       ${nav}
-      <div class="virtual-table-shell" data-virtual-table="not_in_master">
-        <table class="mtc" style="margin-top:5px;margin-bottom:10px;text-align:right;">
-          <tr class="thc"><th>#</th><th>Callsign</th><th>QSOs</th><th>First</th><th>Last</th></tr>
-          <tbody data-virtual-body="not_in_master"></tbody>
-        </table>
-      </div>
+      ${renderRetainedVirtualTable('not_in_master', {
+        rows: rowList,
+        rowHeight: 28,
+        overscan: 10,
+        columnCount: 5,
+        emptyHtml: '<tr class="td1"><td colspan="5">All calls found in master.</td></tr>',
+        headerHtml: '<tr class="thc"><th>#</th><th>Callsign</th><th>QSOs</th><th>First</th><th>Last</th></tr>'
+      })}
       ${nav}
     `;
   }
