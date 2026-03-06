@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Retained Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>Retained Runtime Smoke</h1>
+  <p>Checks the extracted retained-report runtime module, including static tables, retained roots, virtual-table binding, and refresh fallback.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      try {
+        const [mainSource, moduleSource, retainedModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/reports/retained-runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/reports/retained-runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/reports/retained-runtime.js')
+        ]);
+
+        add('Main.js imports the retained runtime module', mainSource.includes("const RETAINED_RUNTIME_MODULE_URL = './modules/reports/retained-runtime.js?v=6.1.21';"));
+        add('Main.js preloads retained runtime during init', mainSource.includes('const retainedRuntimeReady = loadRetainedRuntimeModule();') && mainSource.includes('await retainedRuntimeReady;'));
+        add('Main.js delegates retained report shell rendering', mainSource.includes('return getRetainedRuntime().renderRetainedReportShell(reportId, html);'));
+        add('Main.js delegates retained virtual table rendering', mainSource.includes('return getRetainedRuntime().renderRetainedVirtualTable(reportId, options);'));
+        add('Main.js delegates virtual table binding', mainSource.includes('return getRetainedRuntime().bindVirtualTable(reportId);'));
+        add('Retained runtime module exports the factory', moduleSource.includes('export function createRetainedReportRuntime'));
+
+        const viewContainer = document.createElement('div');
+        document.body.appendChild(viewContainer);
+
+        let currentReportId = 'countries';
+        let createdControllers = 0;
+        let destroyedControllers = 0;
+        let rerenderCount = 0;
+        const bindCalls = [];
+        const reportContent = {
+          countries: '<div class="updated-report">Updated retained content</div>'
+        };
+
+        const runtime = retainedModule.createRetainedReportRuntime({
+          escapeAttr: (value) => String(value == null ? '' : value).replace(/"/g, '&quot;'),
+          getDom: () => ({ viewContainer }),
+          getCurrentReportId: () => currentReportId,
+          isRetainedReport: (reportId) => reportId === 'countries',
+          loadVirtualTableModule: async () => ({
+            createVirtualTableController: ({ tbody, rows, emptyHtml }) => {
+              tbody.innerHTML = rows.length ? rows.join('') : emptyHtml;
+              createdControllers += 1;
+              return {
+                destroy() {
+                  destroyedControllers += 1;
+                  tbody.innerHTML = '';
+                }
+              };
+            }
+          }),
+          renderRetainedReportContent: (reportId) => reportContent[reportId] || `<div>${reportId}</div>`,
+          bindReportInteractions: (reportId) => bindCalls.push(String(reportId || '')),
+          renderCurrentReportWithLoading: () => {
+            rerenderCount += 1;
+          }
+        });
+
+        const staticTableHtml = runtime.withStaticVirtualTableRender(() => runtime.renderRetainedVirtualTable('countries', {
+          rows: ['<tr><td>Static</td></tr>'],
+          columnCount: 1,
+          headerHtml: '<thead><tr><th>Label</th></tr></thead>'
+        }));
+        add(
+          'withStaticVirtualTableRender renders full table bodies inline',
+          staticTableHtml.includes('<tbody><tr><td>Static</td></tr></tbody>') && !staticTableHtml.includes('data-virtual-body'),
+          staticTableHtml
+        );
+
+        const retainedShellHtml = runtime.renderRetainedReportShell('countries', runtime.renderRetainedVirtualTable('countries', {
+          rows: ['<tr><td>Virtualized</td></tr>'],
+          columnCount: 1,
+          headerHtml: '<thead><tr><th>Label</th></tr></thead>',
+          emptyHtml: '<tr><td>Empty</td></tr>'
+        }));
+        viewContainer.innerHTML = retainedShellHtml;
+        add(
+          'renderRetainedReportShell creates a retained root wrapper',
+          viewContainer.querySelector('[data-retained-root="countries"]') instanceof HTMLElement,
+          viewContainer.innerHTML
+        );
+
+        await runtime.bindVirtualTable('countries');
+        const virtualBody = viewContainer.querySelector('[data-virtual-body="countries"]');
+        add(
+          'bindVirtualTable mounts a controller and renders rows',
+          createdControllers === 1 && virtualBody instanceof HTMLElement && virtualBody.innerHTML.includes('Virtualized'),
+          virtualBody?.innerHTML || 'missing tbody'
+        );
+
+        runtime.refreshCurrentReportView('countries');
+        add(
+          'refreshCurrentReportView reuses the retained root and rebinds interactions',
+          destroyedControllers === 1
+            && viewContainer.querySelector('.updated-report') instanceof HTMLElement
+            && bindCalls.includes('countries'),
+          JSON.stringify({ destroyedControllers, bindCalls, html: viewContainer.innerHTML })
+        );
+
+        currentReportId = 'summary';
+        runtime.refreshCurrentReportView('countries');
+        add(
+          'refreshCurrentReportView falls back when the retained report is not active',
+          rerenderCount === 1,
+          `rerenderCount=${rerenderCount}`
+        );
+
+        const failed = checks.filter((entry) => !entry.ok);
+        setResult(failed.length === 0, {
+          checksTotal: checks.length,
+          checksFailed: failed.length,
+          failed,
+          createdControllers,
+          destroyedControllers,
+          rerenderCount,
+          bindCalls
+        });
+      } catch (err) {
+        setResult(false, {
+          error: err && err.message ? err.message : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

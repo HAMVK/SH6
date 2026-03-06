@@ -187,6 +187,7 @@
   const COMPARE_PERSPECTIVE_STORAGE_KEY = 'sh6_compare_perspectives_v1';
   const COMPARE_PERSPECTIVE_LIMIT = 12;
   const COMPARE_WORKSPACE_MODULE_URL = './modules/compare/workspace-ui.js?v=6.1.21';
+  const RETAINED_RUNTIME_MODULE_URL = './modules/reports/retained-runtime.js?v=6.1.21';
   const ARCHIVE_CLIENT_MODULE_URL = './modules/archive/client.js?v=6.1.21';
   const INVESTIGATION_WORKSPACE_MODULE_URL = './modules/reports/investigation-workspace.js?v=6.1.21';
   const SESSION_CODEC_MODULE_URL = './modules/session/codec.js?v=6.1.21';
@@ -1258,14 +1259,14 @@
   let callsignGridTimer = null;
   let callsignGridInFlight = false;
   let callsignLookupLastRequestTs = 0;
-  const virtualTableControllers = new Map();
-  const retainedReportModels = Object.create(null);
   let rbnCompareSignalResizeObserver = null;
   let rbnCompareSignalResizeRaf = 0;
   let cqApiRetryTimer = null;
   let competitorCoachRetryTimer = null;
   let html2CanvasLoadPromise = null;
   let agentRuntimeModulePromise = null;
+  let retainedRuntimeModulePromise = null;
+  let retainedRuntime = null;
   let virtualTableModulePromise = null;
   let durableStorageModulePromise = null;
   let durableStorageReadyPromise = null;
@@ -1285,7 +1286,6 @@
   let engineTaskWorker = null;
   let engineTaskSeq = 0;
   let derivedRecomputeSeq = 0;
-  let staticVirtualTableRenderDepth = 0;
   const engineTaskResolvers = new Map();
 
   const base64UrlEncode = (value) => {
@@ -1470,6 +1470,36 @@
       throw new Error('compare workspace renderer not loaded');
     }
     return compareWorkspaceRenderer;
+  }
+
+  function loadRetainedRuntimeModule() {
+    if (!retainedRuntimeModulePromise) {
+      retainedRuntimeModulePromise = import(RETAINED_RUNTIME_MODULE_URL)
+        .then((mod) => {
+          if (!mod || typeof mod.createRetainedReportRuntime !== 'function') {
+            throw new Error('retained runtime module unavailable');
+          }
+          retainedRuntime = mod.createRetainedReportRuntime({
+            escapeAttr,
+            getDom: () => dom,
+            getCurrentReportId: () => reports[state.activeIndex]?.id || '',
+            isRetainedReport,
+            loadVirtualTableModule,
+            renderRetainedReportContent,
+            bindReportInteractions,
+            renderCurrentReportWithLoading: () => renderReportWithLoading(reports[state.activeIndex])
+          });
+          return retainedRuntime;
+        });
+    }
+    return retainedRuntimeModulePromise;
+  }
+
+  function getRetainedRuntime() {
+    if (!retainedRuntime) {
+      throw new Error('retained runtime not loaded');
+    }
+    return retainedRuntime;
   }
 
   function loadArchiveClientModule() {
@@ -1815,23 +1845,11 @@
   }
 
   function destroyVirtualTableControllers() {
-    virtualTableControllers.forEach((controller) => {
-      try {
-        controller.destroy();
-      } catch (err) {
-        /* ignore teardown failures */
-      }
-    });
-    virtualTableControllers.clear();
-  }
-
-  function setRetainedReportModel(reportId, model) {
-    retainedReportModels[String(reportId || '')] = model || null;
+    return getRetainedRuntime().destroyVirtualTableControllers();
   }
 
   function renderRetainedReportShell(reportId, html) {
-    const key = String(reportId || '').split('::')[0];
-    return `<div class="retained-report-root" data-retained-root="${escapeAttr(key)}">${html}</div>`;
+    return getRetainedRuntime().renderRetainedReportShell(reportId, html);
   }
 
   function renderRetainedReportContent(reportId) {
@@ -1879,111 +1897,19 @@
   }
 
   function refreshCurrentReportView(reportId = reports[state.activeIndex]?.id || '') {
-    const key = String(reportId || '').split('::')[0];
-    if (!isRetainedReport(key) || reports[state.activeIndex]?.id !== key || !(dom.viewContainer instanceof HTMLElement)) {
-      renderReportWithLoading(reports[state.activeIndex]);
-      return;
-    }
-    const root = dom.viewContainer.querySelector(`[data-retained-root="${escapeAttr(key)}"]`);
-    if (!(root instanceof HTMLElement)) {
-      renderReportWithLoading(reports[state.activeIndex]);
-      return;
-    }
-    destroyVirtualTableControllers();
-    root.innerHTML = renderRetainedReportContent(key);
-    bindReportInteractions(key);
+    return getRetainedRuntime().refreshCurrentReportView(reportId);
   }
 
   function bindVirtualTable(reportId) {
-    const key = String(reportId || '').split('::')[0];
-    const shell = dom.viewContainer instanceof HTMLElement
-      ? dom.viewContainer.querySelector(`[data-virtual-table="${key}"]`)
-      : null;
-    const tbody = dom.viewContainer instanceof HTMLElement
-      ? dom.viewContainer.querySelector(`[data-virtual-body="${key}"]`)
-      : null;
-    const model = retainedReportModels[key];
-    if (!(shell instanceof HTMLElement) || !(tbody instanceof HTMLElement) || !model || !Array.isArray(model.rows)) {
-      return;
-    }
-    loadVirtualTableModule()
-      .then((mod) => {
-        if (!mod || typeof mod.createVirtualTableController !== 'function') return;
-        const existing = virtualTableControllers.get(key);
-        if (existing) {
-          existing.destroy();
-          virtualTableControllers.delete(key);
-        }
-        const controller = mod.createVirtualTableController({
-          scrollEl: shell,
-          tbody,
-          rows: model.rows,
-          rowHeight: model.rowHeight,
-          overscan: model.overscan,
-          colspan: model.colspan,
-          emptyHtml: model.emptyHtml
-        });
-        virtualTableControllers.set(key, controller);
-      })
-      .catch(() => {
-        if (tbody instanceof HTMLElement) {
-          tbody.innerHTML = model.rows.length ? model.rows.join('') : model.emptyHtml;
-        }
-      });
-  }
-
-  function joinTableRows(rows) {
-    if (Array.isArray(rows)) return rows.join('');
-    return String(rows || '');
+    return getRetainedRuntime().bindVirtualTable(reportId);
   }
 
   function withStaticVirtualTableRender(fn) {
-    staticVirtualTableRenderDepth += 1;
-    try {
-      return fn();
-    } finally {
-      staticVirtualTableRenderDepth = Math.max(0, staticVirtualTableRenderDepth - 1);
-    }
+    return getRetainedRuntime().withStaticVirtualTableRender(fn);
   }
 
   function renderRetainedVirtualTable(reportId, options = {}) {
-    const key = String(reportId || '').split('::')[0];
-    const rows = Array.isArray(options.rows) ? options.rows : [];
-    const columnCount = Math.max(1, Number(options.columnCount) || 1);
-    const emptyHtml = options.emptyHtml == null ? '' : String(options.emptyHtml);
-    const tableClass = options.tableClass || 'mtc';
-    const tableStyle = options.tableStyle || 'margin-top:5px;margin-bottom:10px;text-align:right;';
-    const colgroup = options.colgroupHtml || '';
-    const header = options.headerHtml || '';
-    const footer = options.footerHtml ? `<tfoot>${options.footerHtml}</tfoot>` : '';
-    if (staticVirtualTableRenderDepth > 0) {
-      const body = rows.length ? joinTableRows(rows) : emptyHtml;
-      return `
-        <table class="${escapeAttr(tableClass)}" style="${escapeAttr(tableStyle)}">
-          ${colgroup}
-          ${header}
-          <tbody>${body}</tbody>
-          ${footer}
-        </table>
-      `;
-    }
-    setRetainedReportModel(key, {
-      rows,
-      rowHeight: Math.max(20, Number(options.rowHeight) || 28),
-      overscan: Math.max(4, Number(options.overscan) || 10),
-      colspan: columnCount,
-      emptyHtml
-    });
-    return `
-      <div class="virtual-table-shell" data-virtual-table="${escapeAttr(key)}">
-        <table class="${escapeAttr(tableClass)}" style="${escapeAttr(tableStyle)}">
-          ${colgroup}
-          ${header}
-          <tbody data-virtual-body="${escapeAttr(key)}"></tbody>
-          ${footer}
-        </table>
-      </div>
-    `;
+    return getRetainedRuntime().renderRetainedVirtualTable(reportId, options);
   }
 
   function buildSlotSnapshot(source) {
@@ -21618,6 +21544,7 @@
     setupNavSearch();
     rebuildReports();
     const compareWorkspaceReady = loadCompareWorkspaceModule();
+    const retainedRuntimeReady = loadRetainedRuntimeModule();
     const investigationWorkspaceReady = loadInvestigationWorkspaceModule();
     const sessionCodecReady = loadSessionCodecModule();
     const comparePerspectiveReady = loadComparePerspectiveModule();
@@ -21699,6 +21626,7 @@
     }
     // Export actions are handled in the Export report page.
     await compareWorkspaceReady;
+    await retainedRuntimeReady;
     await investigationWorkspaceReady;
     await sessionCodecReady;
     await comparePerspectiveReady;
