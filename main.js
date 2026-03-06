@@ -156,6 +156,14 @@
     [COMPARE_SCORE_MODE_CLAIMED]: 'Claimed score',
     [COMPARE_SCORE_MODE_LOGGED]: 'Logged points'
   });
+  const COMPARE_TIME_LOCK_REPORTS = new Set([
+    'qs_by_hour_sheet',
+    'points_by_hour_sheet',
+    'qs_by_minute',
+    'points_by_minute'
+  ]);
+  const COMPARE_PERSPECTIVE_STORAGE_KEY = 'sh6_compare_perspectives_v1';
+  const COMPARE_PERSPECTIVE_LIMIT = 12;
   const SQLJS_BASE_URLS = [
     'https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/',
     'https://unpkg.com/sql.js@1.8.0/dist/'
@@ -503,6 +511,9 @@
       analysisMode: state.analysisMode,
       compareCount: state.compareCount,
       compareScoreMode: state.compareScoreMode,
+      compareSyncEnabled: state.compareSyncEnabled,
+      compareStickyEnabled: state.compareStickyEnabled,
+      compareTimeRangeLock: cloneTsRange(state.compareTimeRangeLock),
       compareFocus: state.compareFocus,
       globalBandFilter: state.globalBandFilter || '',
       breakThreshold: state.breakThreshold,
@@ -635,6 +646,14 @@
     if (!Array.isArray(value) || value.length !== 2) return null;
     const start = Number(value[0]);
     const end = Number(value[1]);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    return { [startKey]: start, [endKey]: end };
+  }
+
+  function cloneTsRange(value, startKey = 'startTs', endKey = 'endTs') {
+    if (!value || typeof value !== 'object') return null;
+    const start = Number(value[startKey]);
+    const end = Number(value[endKey]);
     if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
     return { [startKey]: start, [endKey]: end };
   }
@@ -786,6 +805,10 @@
     const compareCount = Number(payload.compareCount);
     if (Number.isFinite(compareCount) && compareCount !== 1) compact.c = compareCount;
     if (payload.compareScoreMode && payload.compareScoreMode !== COMPARE_SCORE_MODE_COMPUTED) compact.cs = payload.compareScoreMode;
+    if (payload.compareSyncEnabled === false) compact.sy = 0;
+    if (payload.compareStickyEnabled === false) compact.sk = 0;
+    const compareTimeRangeLock = compactRangeObject(payload.compareTimeRangeLock, 'startTs', 'endTs');
+    if (compareTimeRangeLock) compact.tr = compareTimeRangeLock;
     const focus = compactCompareFocus(payload.compareFocus);
     if (focus) compact.f = focus;
     if (payload.globalBandFilter) compact.g = payload.globalBandFilter;
@@ -819,6 +842,9 @@
     const analysisMode = normalizeAnalysisMode(compact.am);
     const compareCount = Math.min(4, Math.max(1, Number(compact.c) || 1));
     const compareScoreMode = normalizeCompareScoreMode(compact.cs);
+    const compareSyncEnabled = compact.sy !== 0;
+    const compareStickyEnabled = compact.sk !== 0;
+    const compareTimeRangeLock = inflateRangeObject(compact.tr, 'startTs', 'endTs');
     const breakThreshold = Number(compact.b);
     const passedQsoWindow = Number(compact.p);
     const logPageSize = Number(compact.z);
@@ -832,6 +858,9 @@
       analysisMode,
       compareCount,
       compareScoreMode,
+      compareSyncEnabled,
+      compareStickyEnabled,
+      compareTimeRangeLock,
       compareFocus: inflateCompareFocus(compact.f),
       globalBandFilter: typeof compact.g === 'string' ? compact.g : '',
       globalYearsFilter: normalizePeriodYears(compact[PERIOD_FILTER_COMPACT_YEARS]),
@@ -920,6 +949,139 @@
     return COMPARE_SCORE_MODE_LABELS[key] || COMPARE_SCORE_MODE_LABELS[COMPARE_SCORE_MODE_COMPUTED];
   }
 
+  function formatCompareTimeRangeLabel(range) {
+    const safe = cloneTsRange(range);
+    if (!safe) return 'No time lock';
+    return `${formatTimeOnly(safe.startTs, formatDateSh6(safe.startTs))} → ${formatTimeOnly(safe.endTs, formatDateSh6(safe.endTs))}`;
+  }
+
+  function getCompareTimeRangeLock() {
+    return cloneTsRange(state.compareTimeRangeLock);
+  }
+
+  function sameTsRange(a, b) {
+    const left = cloneTsRange(a);
+    const right = cloneTsRange(b);
+    if (!left || !right) return false;
+    return left.startTs === right.startTs && left.endTs === right.endTs;
+  }
+
+  function filterQsosAndPointsByTsRange(qsos, pointsByIndex, range) {
+    const safe = cloneTsRange(range);
+    const list = Array.isArray(qsos) ? qsos : [];
+    const points = Array.isArray(pointsByIndex) ? pointsByIndex : null;
+    if (!safe) {
+      return {
+        qsos: list.slice(),
+        pointsByIndex: points ? points.slice() : null
+      };
+    }
+    const filteredQsos = [];
+    const filteredPoints = points ? [] : null;
+    list.forEach((q, idx) => {
+      if (!Number.isFinite(q?.ts) || q.ts < safe.startTs || q.ts > safe.endTs) return;
+      filteredQsos.push(q);
+      if (filteredPoints) filteredPoints.push(points[idx]);
+    });
+    return {
+      qsos: filteredQsos,
+      pointsByIndex: filteredPoints
+    };
+  }
+
+  function buildMinuteCountMap(qsos) {
+    const map = new Map();
+    (qsos || []).forEach((q) => {
+      if (!Number.isFinite(q?.ts)) return;
+      const minuteBucket = Math.floor(q.ts / 60000);
+      map.set(minuteBucket, (map.get(minuteBucket) || 0) + 1);
+    });
+    return map;
+  }
+
+  function buildMinutePointMapFromQsos(qsos, pointsByIndex) {
+    const map = new Map();
+    (qsos || []).forEach((q, idx) => {
+      if (!Number.isFinite(q?.ts)) return;
+      const minuteBucket = Math.floor(q.ts / 60000);
+      const points = Number(Array.isArray(pointsByIndex) ? pointsByIndex[idx] : q?.points);
+      map.set(minuteBucket, (map.get(minuteBucket) || 0) + (Number.isFinite(points) ? points : 0));
+    });
+    return map;
+  }
+
+  function loadStoredComparePerspectives() {
+    try {
+      const raw = localStorage.getItem(COMPARE_PERSPECTIVE_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((entry) => entry && typeof entry === 'object') : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function writeStoredComparePerspectives(items) {
+    try {
+      localStorage.setItem(COMPARE_PERSPECTIVE_STORAGE_KEY, JSON.stringify(Array.isArray(items) ? items : []));
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function buildCurrentComparePerspective() {
+    const reportId = reports[state.activeIndex]?.id || 'main';
+    const savedAt = Date.now();
+    return {
+      id: `perspective-${savedAt}`,
+      savedAt,
+      label: `${new Date(savedAt).toISOString().slice(0, 16).replace('T', ' ')} · ${reportId}`,
+      reportId,
+      compareScoreMode: normalizeCompareScoreMode(state.compareScoreMode),
+      compareSyncEnabled: Boolean(state.compareSyncEnabled),
+      compareStickyEnabled: Boolean(state.compareStickyEnabled),
+      compareTimeRangeLock: cloneTsRange(state.compareTimeRangeLock),
+      compareFocus: cloneCompareFocus(state.compareFocus),
+      globalBandFilter: state.globalBandFilter || '',
+      logTimeRange: cloneTsRange(state.logTimeRange)
+    };
+  }
+
+  function saveCurrentComparePerspective() {
+    const next = buildCurrentComparePerspective();
+    const existing = loadStoredComparePerspectives().filter((entry) => entry.id !== next.id);
+    existing.unshift(next);
+    writeStoredComparePerspectives(existing.slice(0, COMPARE_PERSPECTIVE_LIMIT));
+    return next;
+  }
+
+  function deleteStoredComparePerspective(id) {
+    const key = String(id || '');
+    if (!key) return false;
+    const next = loadStoredComparePerspectives().filter((entry) => String(entry?.id || '') !== key);
+    return writeStoredComparePerspectives(next);
+  }
+
+  function applyStoredComparePerspective(rawPerspective) {
+    if (!rawPerspective || typeof rawPerspective !== 'object') return false;
+    state.compareScoreMode = normalizeCompareScoreMode(rawPerspective.compareScoreMode);
+    state.compareSyncEnabled = rawPerspective.compareSyncEnabled !== false;
+    state.compareStickyEnabled = rawPerspective.compareStickyEnabled !== false;
+    state.compareTimeRangeLock = cloneTsRange(rawPerspective.compareTimeRangeLock);
+    state.compareFocus = cloneCompareFocus(rawPerspective.compareFocus || DEFAULT_COMPARE_FOCUS);
+    state.globalBandFilter = rawPerspective.globalBandFilter || '';
+    state.logTimeRange = cloneTsRange(rawPerspective.logTimeRange);
+    updateBandRibbon();
+    const reportId = String(rawPerspective.reportId || '');
+    if (reportId) {
+      setActiveReportById(reportId, { silent: true });
+      return true;
+    }
+    renderActiveReport();
+    return true;
+  }
+
   function resolveAnalysisModeSuggestion(logData, derived) {
     const qsos = Array.isArray(logData?.qsos) ? logData.qsos : [];
     if (!qsos.length) return null;
@@ -1003,6 +1165,9 @@
     state.allCallsignsCountryFilter = '';
     state.analysisMode = normalizeAnalysisMode(migrated.analysisMode) || ANALYSIS_MODE_DEFAULT;
     state.compareScoreMode = normalizeCompareScoreMode(migrated.compareScoreMode);
+    state.compareSyncEnabled = migrated.compareSyncEnabled !== false;
+    state.compareStickyEnabled = migrated.compareStickyEnabled !== false;
+    state.compareTimeRangeLock = cloneTsRange(migrated.compareTimeRangeLock);
     if (dom.analysisModeRadios && dom.analysisModeRadios.length) {
       dom.analysisModeRadios.forEach((radio) => {
         radio.checked = String(radio.value) === state.analysisMode;
@@ -1286,6 +1451,7 @@
     compareCountBeforeDxer: 1,
     compareSyncEnabled: true,
     compareStickyEnabled: true,
+    compareTimeRangeLock: null,
     chartMetricMode: CHART_MODE_ABSOLUTE,
     uiTheme: UI_THEME_NT,
     navSearch: '',
@@ -1351,6 +1517,7 @@
   const dom = {
     navList: document.getElementById('navList'),
     navSearchInput: document.getElementById('navSearchInput'),
+    navSearchEmpty: document.getElementById('navSearchEmpty'),
     loadPanel: document.getElementById('loadPanel'),
     fileInput: document.getElementById('fileInput'),
     fileInputB: document.getElementById('fileInputB'),
@@ -1850,13 +2017,16 @@
 
   function applyNavSearchFilter(rawTerm = '') {
     if (!dom.navList) return;
-    const term = String(rawTerm || '').trim().toLowerCase();
+    const rawValue = String(rawTerm || '').trim();
+    const term = rawValue.toLowerCase();
     state.navSearch = term;
     const navNodes = Array.from(dom.navList.querySelectorAll('[data-index]'));
+    let visibleCount = 0;
     navNodes.forEach((el) => {
       const text = String(el.dataset.searchText || el.textContent || '').trim().toLowerCase();
       const visible = !term || text.includes(term);
       el.classList.toggle('nav-hidden', !visible);
+      if (visible) visibleCount += 1;
     });
 
     const groups = Array.from(dom.navList.querySelectorAll('.nav-group'));
@@ -1875,6 +2045,16 @@
       const sectionDetails = item.querySelector('.nav-section');
       if (sectionDetails && term && visible) sectionDetails.open = true;
     });
+
+    if (dom.navSearchEmpty) {
+      const finalVisibleCount = navNodes.filter((el) => !el.classList.contains('nav-hidden') && !el.closest('.nav-hidden')).length;
+      const showEmpty = Boolean(term) && finalVisibleCount === 0;
+      dom.navSearchEmpty.hidden = !showEmpty;
+      dom.navSearchEmpty.setAttribute('aria-hidden', showEmpty ? 'false' : 'true');
+      dom.navSearchEmpty.textContent = showEmpty
+        ? `No reports match "${rawValue}". Try a shorter term or press Esc to clear.`
+        : '';
+    }
   }
 
   function setupNavSearch() {
@@ -10613,13 +10793,6 @@
       `
       : '';
 
-    const quickActionBlock = `
-      <div class="coach-quick-actions">
-        <div class="coach-quick-hint">${escapeHtml(quickActionHint)}</div>
-        ${quickActionButton}
-      </div>
-    `;
-
     const currentScoreValue = Number(current?.score);
     const nearestAheadGap = Number(nearestAhead?.scoreGap);
     const nearestAheadPct = Number.isFinite(nearestAheadGap) && Number.isFinite(currentScoreValue) && currentScoreValue > 0
@@ -10679,6 +10852,153 @@
         `).join('')}
       </div>
     `;
+
+    const severityRank = {
+      critical: 0,
+      high: 1,
+      medium: 2,
+      opportunity: 3,
+      info: 4
+    };
+    const buildHoursToCloseHint = (row) => {
+      const absScoreGap = Math.abs(Number(row?.scoreGap));
+      if (!Number.isFinite(absScoreGap) || absScoreGap <= 0) return 'Hours-to-close estimate unavailable.';
+      const overall = Number.isFinite(avgScorePerHour) && avgScorePerHour > 0
+        ? `${(absScoreGap / avgScorePerHour).toFixed(1)}h overall`
+        : 'N/A overall';
+      const active = Number.isFinite(avgScorePerActiveHour) && avgScorePerActiveHour > 0
+        ? `${(absScoreGap / avgScorePerActiveHour).toFixed(1)}h active`
+        : 'N/A active';
+      return `At current pace the score swing is about ${overall} or ${active}.`;
+    };
+    const renderRankedCoachActionCard = (action, index) => `
+      <article class="coach-ranked-card coach-ranked-${normalizeCoachSeverity(action.level)}">
+        <div class="coach-ranked-head">
+          <div class="coach-ranked-title">
+            <span class="coach-ranked-order">${index + 1}</span>
+            <h4>${escapeHtml(action.title)}</h4>
+          </div>
+          <span class="coach-severity-badge coach-severity-${normalizeCoachSeverity(action.level)}">${coachSeverityLabel(action.level)}</span>
+        </div>
+        <p class="coach-ranked-summary">${escapeHtml(action.summary)}</p>
+        <ul class="coach-ranked-list">
+          ${(action.details || []).map((detail) => `<li>${escapeHtml(detail)}</li>`).join('')}
+        </ul>
+        <div class="coach-ranked-actions">
+          ${action.actions || '<button type="button" class="coach-brief-btn coach-brief-nav" data-report="summary">Summary</button>'}
+        </div>
+      </article>
+    `;
+    const rankedActions = [];
+    if (!rows.length || !current) {
+      rankedActions.push({
+        level: cohortSeverity,
+        title: !rows.length ? 'Widen competitor cohort' : 'Repair cohort coverage',
+        summary: quickActionHint,
+        details: [
+          `Scope: ${formatCoachScopeTitle(selectedScope)}${scopeValueText ? ` (${scopeValueText})` : ''}.`,
+          `Category mode: ${categoryMode === 'all' ? 'All categories' : 'Same category only'}.`,
+          !rows.length
+            ? 'Recommendation: widen the scope or category so SH6 can find direct rivals.'
+            : 'Recommendation: switch to All categories or a wider scope so your own station appears in the cohort.'
+        ],
+        actions: `
+          <button type="button" class="coach-brief-btn coach-brief-nav" data-report="summary">Summary</button>
+          <button type="button" class="coach-brief-btn coach-brief-nav" data-report="spots">Missed multipliers (Spots)</button>
+        `
+      });
+    }
+    if (quickActionRow) {
+      const quickScoreGap = Number(quickActionRow?.scoreGap);
+      const quickGapDirection = Number.isFinite(quickScoreGap)
+        ? (quickScoreGap > 0 ? 'behind' : (quickScoreGap < 0 ? 'ahead' : 'even with'))
+        : 'near';
+      rankedActions.push({
+        level: nearestAhead ? gapSeverity : 'opportunity',
+        title: nearestAhead ? 'Load the nearest rival into compare' : 'Load the nearest benchmark into compare',
+        summary: quickActionHint,
+        details: [
+          `Target: ${quickActionCall || 'N/A'} in ${quickGapDirection} position.`,
+          Number.isFinite(quickScoreGap)
+            ? `Score swing: ${formatNumberSh6(Math.abs(Math.round(quickScoreGap)))} points. ${buildHoursToCloseHint(quickActionRow)}`
+            : 'Score swing estimate unavailable.',
+          `Use the compare workspace with a locked time range to isolate where the swing happened.`
+        ],
+        actions: `
+          ${quickActionButton}
+          <button type="button" class="coach-brief-btn coach-brief-nav" data-report="graphs_points_by_hour">Points by hour</button>
+          <button type="button" class="coach-brief-btn coach-brief-nav" data-report="one_minute_point_rates">1-minute point rates</button>
+        `
+      });
+    }
+    if (gapDriver) {
+      const gapActionButtons = gapDriver?.driver === 'mult'
+        ? `
+          <button type="button" class="coach-brief-btn coach-brief-nav" data-report="spots">Missed multipliers (Spots)</button>
+          <button type="button" class="coach-brief-btn coach-brief-nav" data-report="summary">Scoring summary</button>
+        `
+        : gapDriver?.driver === 'qso'
+          ? `
+            <button type="button" class="coach-brief-btn coach-brief-nav" data-report="graphs_points_by_hour">Points by hour</button>
+            <button type="button" class="coach-brief-btn coach-brief-nav" data-report="one_minute_point_rates">1-minute point rates</button>
+          `
+          : `
+            <button type="button" class="coach-brief-btn coach-brief-nav" data-report="graphs_points_by_hour">Points by hour</button>
+            <button type="button" class="coach-brief-btn coach-brief-nav" data-report="spots">Missed multipliers (Spots)</button>
+          `;
+      rankedActions.push({
+        level: executionSeverity,
+        title: gapDriver?.driver === 'mult'
+          ? 'Recover the gap through multiplier hunting'
+          : (gapDriver?.driver === 'qso'
+              ? 'Recover the gap through sustained rate'
+              : 'Split the recovery between rate and multipliers'),
+        summary: gapDriverAction,
+        details: [
+          `${gapDriverDirection} ${gapDriver.targetCallsign || 'N/A'} with a ${gapDriverScore} score gap.`,
+          `Primary driver: ${gapDriverPrimary} (${gapDriverShare} share).`,
+          `Breakdown: QSO gap ${gapDriverQso} | Mult gap ${gapDriverMult}.`
+        ],
+        actions: gapActionButtons
+      });
+    }
+    if (current && (nearestBehind || !nearestAhead)) {
+      rankedActions.push({
+        level: nearestBehind ? 'medium' : 'info',
+        title: nearestBehind ? 'Protect against the nearest defender' : 'Protect the current lead',
+        summary: nearestBehind
+          ? `Nearest defender is ${normalizeCall(nearestBehind.callsign || '') || 'N/A'}. Keep the lead while you chase the next station.`
+          : 'No immediate defender is visible in this cohort. Use the lead to pressure multipliers and protect high-rate hours.',
+        details: [
+          nearestBehind
+            ? `Defender gap: ${formatNumberSh6(Math.abs(Math.round(Number(nearestBehind.scoreGap) || 0)))} points.`
+            : 'No close defender detected in the current cohort.',
+          'Monitor your strongest hours first so the lead does not leak during low-activity periods.',
+          'Use time-locked compare and minute-rate reports before making operating changes.'
+        ],
+        actions: `
+          <button type="button" class="coach-brief-btn coach-brief-nav" data-report="graphs_points_by_hour">Points by hour</button>
+          <button type="button" class="coach-brief-btn coach-brief-nav" data-report="qs_by_minute">QSOs by minute</button>
+          <button type="button" class="coach-brief-btn coach-brief-nav" data-report="spots">Missed multipliers (Spots)</button>
+        `
+      });
+    }
+    rankedActions.sort((left, right) => {
+      const leftRank = severityRank[normalizeCoachSeverity(left.level)] ?? 99;
+      const rightRank = severityRank[normalizeCoachSeverity(right.level)] ?? 99;
+      return leftRank - rightRank;
+    });
+    const rankedActionBlock = rankedActions.length
+      ? `
+        <div class="coach-ranked-actions-wrap">
+          <h4>Ranked actions</h4>
+          <p class="coach-ranked-note">Start with action 1. Each action ties the current cohort gap to a direct compare load or a report jump.</p>
+          <div class="coach-ranked-grid">
+            ${rankedActions.map((action, index) => renderRankedCoachActionCard(action, index)).join('')}
+          </div>
+        </div>
+      `
+      : '';
 
     const tableRows = rows.map((row, idx) => {
       const rowYear = Number(row?.year);
@@ -10838,7 +11158,7 @@
           </table>
           ${coach.statusMessage ? `<p class="cqapi-msg">Data message: ${escapeHtml(coach.statusMessage)}</p>` : ''}
           ${statusText}
-          ${quickActionBlock}
+          ${rankedActionBlock}
           ${renderAnalysisStepHeading(3, 'Primary cohort table', 'Load one or more rivals directly into compare slots.')}
           ${tableBlock}
           ${rivalsBlock}
@@ -11276,6 +11596,39 @@
     `;
   }
 
+  function renderSavedComparePerspectives() {
+    const items = loadStoredComparePerspectives();
+    const rows = items.length
+      ? items.map((entry) => {
+        const id = escapeAttr(String(entry?.id || ''));
+        const label = escapeHtml(String(entry?.label || 'Saved perspective'));
+        const reportId = escapeHtml(String(entry?.reportId || 'main'));
+        const rangeLabel = escapeHtml(formatCompareTimeRangeLabel(entry?.compareTimeRangeLock));
+        return `
+          <tr>
+            <td><strong>${label}</strong></td>
+            <td>${reportId}</td>
+            <td>${rangeLabel}</td>
+            <td>
+              <button type="button" class="button session-perspective-apply" data-perspective-id="${id}">Apply</button>
+              <button type="button" class="button session-perspective-delete" data-perspective-id="${id}">Delete</button>
+            </td>
+          </tr>
+        `;
+      }).join('')
+      : '<tr><td colspan="4">No saved perspectives yet. Save one from Compare workspace.</td></tr>';
+    return `
+      <div class="utility-block utility-block-wide">
+        <h4>Saved compare perspectives</h4>
+        <p>Perspectives store compare workspace state such as active report, score mode, focus pair, sticky/sync toggles, and locked time range.</p>
+        <table class="mtc utility-table">
+          <tr class="thc"><th>Label</th><th>Report</th><th>Time lock</th><th>Actions</th></tr>
+          ${rows}
+        </table>
+      </div>
+    `;
+  }
+
   function renderSessionPage() {
     return `
       <div class="mtc export-panel utility-panel">
@@ -11294,6 +11647,7 @@
             <h4>Load session</h4>
             <p>Opens a saved session JSON and restores everything.</p>
           </div>
+          ${renderSavedComparePerspectives()}
         </div>
         ${renderSessionControls()}
       </div>
@@ -16696,7 +17050,7 @@
       const allLink = qsos && hourBucket != null
         ? `<a href="#" class="log-hour" data-hour="${hourBucket}"><b>${formatNumberSh6(qsos)}</b></a>`
         : (qsos ? `<b>${formatNumberSh6(qsos)}</b>` : '');
-      return `<tr class="${cls}"><td>${dayLabel}</td><td><b>${hourLabel}</b></td>${cells}<td>${allLink}</td><td>${formatNumberSh6(accum || '')}</td><td>${formatNumberSh6(pts || '')}</td><td>${avgPts}</td></tr>`;
+      return `<tr class="${cls}" data-compare-row-key="hour-${escapeAttr(String(key))}"><td>${dayLabel}</td><td><b>${hourLabel}</b></td>${cells}<td>${allLink}</td><td>${formatNumberSh6(accum || '')}</td><td>${formatNumberSh6(pts || '')}</td><td>${avgPts}</td></tr>`;
     }).join('');
     return `
       <table class="mtc" style="margin-top:5px;margin-bottom:10px;text-align:right;">
@@ -16716,11 +17070,19 @@
 
   function renderQsByHourSheetCompare() {
     const slots = getActiveCompareSnapshots();
-    const maps = slots.map((entry) => buildHourBucketMap(
+    const range = getCompareTimeRangeLock();
+    const filtered = slots.map((entry) => filterQsosAndPointsByTsRange(
       entry.snapshot.qsoData?.qsos || [],
-      getEffectivePointsByIndex(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || [])
+      getEffectivePointsByIndex(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || []),
+      range
     ));
-    const order = buildHourKeyOrderFromMapsList(maps, slots.map((entry) => entry.snapshot.qsoData?.qsos || []));
+    const maps = filtered.map((entry) => buildHourBucketMap(entry.qsos, entry.pointsByIndex));
+    const order = buildHourKeyOrderFromMapsList(maps, filtered.map((entry) => entry.qsos));
+    if (!order.length) {
+      const message = range ? 'No QSOs inside the locked time range.' : 'No QSOs to analyze.';
+      const htmlBlocks = slots.map((entry) => (entry.ready ? `<p>${message}</p>` : `<p>No ${entry.label} loaded.</p>`));
+      return renderComparePanels(slots, htmlBlocks, 'qs_by_hour_sheet');
+    }
     const htmlBlocks = slots.map((entry, idx) => (
       entry.ready ? renderQsByHourSheetForSlot(entry.snapshot, order, maps[idx]) : `<p>No ${entry.label} loaded.</p>`
     ));
@@ -16757,7 +17119,7 @@
       const allLink = pts && hourBucket != null
         ? `<a href="#" class="log-hour" data-hour="${hourBucket}"><b>${formatPointValue(pts)}</b></a>`
         : (pts ? `<b>${formatPointValue(pts)}</b>` : '');
-      return `<tr class="${cls}"><td>${dayLabel}</td><td><b>${hourLabel}</b></td>${cells}<td>${allLink}</td><td>${formatPointValue(accum || '')}</td><td>${formatNumberSh6(qsos || '')}</td><td>${avgPts}</td></tr>`;
+      return `<tr class="${cls}" data-compare-row-key="hour-${escapeAttr(String(key))}"><td>${dayLabel}</td><td><b>${hourLabel}</b></td>${cells}<td>${allLink}</td><td>${formatPointValue(accum || '')}</td><td>${formatNumberSh6(qsos || '')}</td><td>${avgPts}</td></tr>`;
     }).join('');
     return `
       <table class="mtc" style="margin-top:5px;margin-bottom:10px;text-align:right;">
@@ -16789,11 +17151,19 @@
 
   function renderPointsByHourSheetCompare() {
     const slots = getActiveCompareSnapshots();
-    const maps = slots.map((entry) => buildHourBucketMap(
+    const range = getCompareTimeRangeLock();
+    const filtered = slots.map((entry) => filterQsosAndPointsByTsRange(
       entry.snapshot.qsoData?.qsos || [],
-      getEffectivePointsByIndex(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || [])
+      getEffectivePointsByIndex(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || []),
+      range
     ));
-    const order = buildHourKeyOrderFromMapsList(maps, slots.map((entry) => entry.snapshot.qsoData?.qsos || []));
+    const maps = filtered.map((entry) => buildHourBucketMap(entry.qsos, entry.pointsByIndex));
+    const order = buildHourKeyOrderFromMapsList(maps, filtered.map((entry) => entry.qsos));
+    if (!order.length) {
+      const message = range ? 'No points inside the locked time range.' : 'No points to analyze.';
+      const htmlBlocks = slots.map((entry) => (entry.ready ? `<p>${message}</p>` : `<p>No ${entry.label} loaded.</p>`));
+      return renderComparePanels(slots, htmlBlocks, 'points_by_hour_sheet');
+    }
     const htmlBlocks = slots.map((entry, idx) => (
       entry.ready ? renderPointsByHourSheetForSlot(entry.snapshot, order, maps[idx]) : `<p>No ${entry.label} loaded.</p>`
     ));
@@ -16996,10 +17366,10 @@
         const startTs = minuteBucket * 60000;
         const minuteLabel = formatDateSh6(startTs);
         const cellValue = count ? `<a href="#" class="log-minute" data-minute="${minuteBucket}" title="${minuteLabel}">${count}</a>` : '';
-        cells += `<td class="${cls}">${cellValue}</td>`;
+        cells += `<td class="${cls}" data-compare-cell-key="minute-${escapeAttr(String(minuteBucket))}">${cellValue}</td>`;
       }
       const rowCls = rowIndex % 2 === 0 ? 'td1' : 'td0';
-      rows += `<tr style="text-align:center;" class="${rowCls}"><td>${dayLabel}</td><td><b>${String(new Date(ts).getUTCHours()).padStart(2, '0')}</b></td>${cells}</tr>`;
+      rows += `<tr style="text-align:center;" class="${rowCls}" data-compare-row-key="hour-${escapeAttr(String(hour))}"><td>${dayLabel}</td><td><b>${String(new Date(ts).getUTCHours()).padStart(2, '0')}</b></td>${cells}</tr>`;
       rowIndex += 1;
     }
     return `
@@ -18918,6 +19288,12 @@
     'spots',
     'rbn_spots'
   ]);
+  const COMPARE_CROSS_HIGHLIGHT_REPORTS = new Set([
+    'qs_by_hour_sheet',
+    'points_by_hour_sheet',
+    'qs_by_minute',
+    'points_by_minute'
+  ]);
 
   function renderCompareHeader(slot, label, slotId) {
     const call = escapeHtml(slot.derived?.contestMeta?.stationCallsign || 'N/A');
@@ -18938,6 +19314,18 @@
     const safeReportId = String(reportId || '').split('::')[0];
     const reportTitle = reports.find((entry) => entry.id === safeReportId)?.title || safeReportId;
     const scoreMode = normalizeCompareScoreMode(state.compareScoreMode);
+    const timeLock = getCompareTimeRangeLock();
+    const currentTimeFilter = cloneTsRange(state.logTimeRange);
+    const supportsTimeLock = COMPARE_TIME_LOCK_REPORTS.has(safeReportId);
+    const lockCurrentButton = supportsTimeLock && currentTimeFilter && !sameTsRange(currentTimeFilter, timeLock)
+      ? `<button type="button" class="compare-ui-toggle" data-compare-range-action="lock-current">Lock current time filter</button>`
+      : '';
+    const timeLockStatus = supportsTimeLock && timeLock
+      ? `<button type="button" class="compare-ui-toggle active" disabled>Time lock ${escapeHtml(formatCompareTimeRangeLabel(timeLock))}</button>`
+      : '';
+    const clearTimeLockButton = supportsTimeLock && timeLock
+      ? `<button type="button" class="compare-ui-toggle" data-compare-range-action="clear-lock">Clear time lock</button>`
+      : '';
     const slotSummary = (slotEntries || []).map((entry) => {
       const call = escapeHtml(entry.snapshot?.derived?.contestMeta?.stationCallsign || 'N/A');
       const contest = escapeHtml(entry.snapshot?.derived?.contestMeta?.contestId || 'N/A');
@@ -18951,6 +19339,10 @@
         <button type="button" class="compare-ui-toggle${scoreMode === COMPARE_SCORE_MODE_COMPUTED ? ' active' : ''}" data-compare-score-mode="${COMPARE_SCORE_MODE_COMPUTED}">${escapeHtml(resolveCompareScoreModeLabel(COMPARE_SCORE_MODE_COMPUTED))}</button>
         <button type="button" class="compare-ui-toggle${scoreMode === COMPARE_SCORE_MODE_CLAIMED ? ' active' : ''}" data-compare-score-mode="${COMPARE_SCORE_MODE_CLAIMED}">${escapeHtml(resolveCompareScoreModeLabel(COMPARE_SCORE_MODE_CLAIMED))}</button>
         <button type="button" class="compare-ui-toggle${scoreMode === COMPARE_SCORE_MODE_LOGGED ? ' active' : ''}" data-compare-score-mode="${COMPARE_SCORE_MODE_LOGGED}">${escapeHtml(resolveCompareScoreModeLabel(COMPARE_SCORE_MODE_LOGGED))}</button>
+        ${timeLockStatus}
+        ${lockCurrentButton}
+        ${clearTimeLockButton}
+        <button type="button" class="compare-ui-toggle" data-compare-perspective-action="save">Save perspective</button>
       </div>
     `;
     const insightStrip = renderCompareInsightStrip(slotEntries, safeReportId);
@@ -19027,6 +19419,59 @@
     return `<button type="button" class="compare-insight-chip" data-compare-jump="${escapeAttr(reportJump)}">${summary}</button>`;
   }
 
+  function buildCompareLargestDeltaChip(slotEntries, reportId) {
+    const baseId = getBaseReportId(reportId);
+    if ((slotEntries || []).length < 2) return '';
+    if (baseId !== 'qs_by_minute' && baseId !== 'points_by_minute') return '';
+    const selectedEntries = (slotEntries || []).length > 2
+      ? (() => {
+        const [leftId, rightId] = getCompareFocusPair(baseId, slotEntries);
+        return [
+          slotEntries.find((entry) => entry.id === leftId),
+          slotEntries.find((entry) => entry.id === rightId)
+        ].filter(Boolean);
+      })()
+      : slotEntries.slice(0, 2);
+    if (selectedEntries.length < 2) return '';
+    const metricLabel = baseId === 'points_by_minute' ? 'points' : 'QSOs';
+    const metricMaps = selectedEntries.slice(0, 2).map((entry) => {
+      const qsos = entry.snapshot?.qsoData?.qsos || [];
+      const range = getCompareTimeRangeLock();
+      const filtered = filterQsosAndPointsByTsRange(
+        qsos,
+        getEffectivePointsByIndex(entry.snapshot?.derived, qsos),
+        range
+      );
+      return baseId === 'points_by_minute'
+        ? buildMinutePointMapFromQsos(filtered.qsos, filtered.pointsByIndex)
+        : buildMinuteCountMap(filtered.qsos);
+    });
+    const keys = new Set([...metricMaps[0].keys(), ...metricMaps[1].keys()]);
+    let best = null;
+    keys.forEach((key) => {
+      const left = Number(metricMaps[0].get(key) || 0);
+      const right = Number(metricMaps[1].get(key) || 0);
+      const delta = left - right;
+      if (!best || Math.abs(delta) > Math.abs(best.delta)) {
+        best = { key, delta, left, right };
+      }
+    });
+    if (!best || !Number.isFinite(best.key)) return '';
+    const leader = best.delta >= 0 ? selectedEntries[0] : selectedEntries[1];
+    const loser = best.delta >= 0 ? selectedEntries[1] : selectedEntries[0];
+    const timeText = escapeHtml(formatDateSh6(best.key * 60000));
+    const deltaText = formatNumberSh6(Math.abs(Math.round(best.delta)));
+    return `
+      <button
+        type="button"
+        class="compare-insight-chip"
+        data-compare-focus-cell-key="minute-${escapeAttr(String(best.key))}"
+      >
+        Largest ${escapeHtml(metricLabel)} delta ${timeText} · ${escapeHtml(leader?.label || 'A')} +${deltaText} vs ${escapeHtml(loser?.label || 'B')}
+      </button>
+    `;
+  }
+
   function renderCompareInsightStrip(slotEntries, currentReportId) {
     const slotMetrics = (slotEntries || []).map((entry) => ({
       id: entry.id,
@@ -19036,6 +19481,7 @@
       multiplier: resolveCompareMultiplier(entry.snapshot)
     }));
     const scoreLabel = resolveCompareScoreModeLabel(state.compareScoreMode);
+    const largestDeltaChip = buildCompareLargestDeltaChip(slotEntries, currentReportId);
     const jumpButtons = `
       <div class="compare-insight-jumps">
         <button type="button" class="compare-workspace-jump" data-compare-jump="${escapeAttr(currentReportId === 'main' ? 'summary' : 'main')}">${currentReportId === 'main' ? 'Jump to summary' : 'Jump to main'}</button>
@@ -19047,6 +19493,7 @@
         <div class="compare-insight-row">
           ${buildCompareInsightChip(slotMetrics, 'score', scoreLabel, 'main')}
           ${buildCompareInsightChip(slotMetrics, 'multiplier', 'Multipliers', 'summary')}
+          ${largestDeltaChip}
         </div>
         ${jumpButtons}
       </div>
@@ -19274,6 +19721,49 @@
         }, { passive: true });
       });
       syncTo(items[0]);
+    });
+  }
+
+  function clearCompareCrossHighlights(root) {
+    if (!(root instanceof HTMLElement)) return;
+    root.querySelectorAll('.compare-highlight-cell, .compare-highlight-row, .compare-focus-target').forEach((el) => {
+      el.classList.remove('compare-highlight-cell', 'compare-highlight-row', 'compare-focus-target');
+    });
+  }
+
+  function bindCompareCrossHighlights(reportId) {
+    const baseId = getFocusReportId(reportId);
+    if (!state.compareEnabled || !COMPARE_CROSS_HIGHLIGHT_REPORTS.has(baseId)) return;
+    const root = dom.viewContainer instanceof HTMLElement
+      ? dom.viewContainer.querySelector(`.compare-grid[data-compare-report="${baseId}"]`)
+      : null;
+    if (!(root instanceof HTMLElement) || root.dataset.crossHighlightBound === '1') return;
+    root.dataset.crossHighlightBound = '1';
+    const activate = (target) => {
+      const cell = target instanceof Element ? target.closest('[data-compare-cell-key]') : null;
+      const row = target instanceof Element ? target.closest('[data-compare-row-key]') : null;
+      if (!cell && !row) return;
+      clearCompareCrossHighlights(root);
+      if (row) {
+        const rowKey = String(row.getAttribute('data-compare-row-key') || '');
+        if (rowKey) {
+          root.querySelectorAll(`[data-compare-row-key="${rowKey}"]`).forEach((el) => el.classList.add('compare-highlight-row'));
+        }
+      }
+      if (cell) {
+        const cellKey = String(cell.getAttribute('data-compare-cell-key') || '');
+        if (cellKey) {
+          root.querySelectorAll(`[data-compare-cell-key="${cellKey}"]`).forEach((el) => el.classList.add('compare-highlight-cell'));
+        }
+      }
+    };
+    root.addEventListener('mouseover', (evt) => activate(evt.target));
+    root.addEventListener('focusin', (evt) => activate(evt.target));
+    root.addEventListener('mouseleave', () => clearCompareCrossHighlights(root));
+    root.addEventListener('focusout', () => {
+      requestAnimationFrame(() => {
+        if (!root.contains(document.activeElement)) clearCompareCrossHighlights(root);
+      });
     });
   }
 
@@ -19613,12 +20103,19 @@
 
   function renderQsByMinuteCompareAligned() {
     const slots = getActiveCompareSnapshots();
+    const range = getCompareTimeRangeLock();
     if (slots.length > 2) {
       const { pair, entries } = resolveFocusEntries('qs_by_minute', slots);
-      const maps = entries.map((entry) => buildMinuteMapFromDerived(entry.snapshot.derived));
+      const filtered = entries.map((entry) => filterQsosAndPointsByTsRange(
+        entry.snapshot.qsoData?.qsos || [],
+        getEffectivePointsByIndex(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || []),
+        range
+      ));
+      const maps = filtered.map((entry) => buildMinuteCountMap(entry.qsos));
       const ranges = maps.map((map) => getMinuteRangeFromMap(map)).filter(Boolean);
       if (!ranges.length) {
-        const htmlBlocks = entries.map((entry) => (entry.ready ? '<p>No QSOs to analyze.</p>' : `<p>No ${entry.label} loaded.</p>`));
+        const message = range ? 'No QSOs inside the locked time range.' : 'No QSOs to analyze.';
+        const htmlBlocks = entries.map((entry) => (entry.ready ? `<p>${message}</p>` : `<p>No ${entry.label} loaded.</p>`));
         const focusControls = renderCompareFocusControls('qs_by_minute', slots, pair);
         return `${focusControls}${renderComparePanels(entries, htmlBlocks, 'qs_by_minute')}`;
       }
@@ -19632,10 +20129,16 @@
       const focusControls = renderCompareFocusControls('qs_by_minute', slots, pair);
       return `${focusControls}${renderComparePanels(entries, htmlBlocks, 'qs_by_minute')}`;
     }
-    const maps = slots.map((entry) => buildMinuteMapFromDerived(entry.snapshot.derived));
+    const filtered = slots.map((entry) => filterQsosAndPointsByTsRange(
+      entry.snapshot.qsoData?.qsos || [],
+      getEffectivePointsByIndex(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || []),
+      range
+    ));
+    const maps = filtered.map((entry) => buildMinuteCountMap(entry.qsos));
     const ranges = maps.map((map) => getMinuteRangeFromMap(map)).filter(Boolean);
     if (!ranges.length) {
-      const htmlBlocks = slots.map((entry) => (entry.ready ? '<p>No QSOs to analyze.</p>' : `<p>No ${entry.label} loaded.</p>`));
+      const message = range ? 'No QSOs inside the locked time range.' : 'No QSOs to analyze.';
+      const htmlBlocks = slots.map((entry) => (entry.ready ? `<p>${message}</p>` : `<p>No ${entry.label} loaded.</p>`));
       return renderComparePanels(slots, htmlBlocks, 'qs_by_minute');
     }
     const minMinute = Math.min(...ranges.map((r) => r.minMinute));
@@ -19650,12 +20153,19 @@
 
   function renderPointsByMinuteCompareAligned() {
     const slots = getActiveCompareSnapshots();
+    const range = getCompareTimeRangeLock();
     if (slots.length > 2) {
       const { pair, entries } = resolveFocusEntries('points_by_minute', slots);
-      const maps = entries.map((entry) => buildMinutePointMapFromDerived(entry.snapshot.derived));
+      const filtered = entries.map((entry) => filterQsosAndPointsByTsRange(
+        entry.snapshot.qsoData?.qsos || [],
+        getEffectivePointsByIndex(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || []),
+        range
+      ));
+      const maps = filtered.map((entry) => buildMinutePointMapFromQsos(entry.qsos, entry.pointsByIndex));
       const ranges = maps.map((map) => getMinuteRangeFromMap(map)).filter(Boolean);
       if (!ranges.length) {
-        const htmlBlocks = entries.map((entry) => (entry.ready ? '<p>No points to analyze.</p>' : `<p>No ${entry.label} loaded.</p>`));
+        const message = range ? 'No points inside the locked time range.' : 'No points to analyze.';
+        const htmlBlocks = entries.map((entry) => (entry.ready ? `<p>${message}</p>` : `<p>No ${entry.label} loaded.</p>`));
         const focusControls = renderCompareFocusControls('points_by_minute', slots, pair);
         return `${focusControls}${renderComparePanels(entries, htmlBlocks, 'points_by_minute')}`;
       }
@@ -19669,10 +20179,16 @@
       const focusControls = renderCompareFocusControls('points_by_minute', slots, pair);
       return `${focusControls}${renderComparePanels(entries, htmlBlocks, 'points_by_minute')}`;
     }
-    const maps = slots.map((entry) => buildMinutePointMapFromDerived(entry.snapshot.derived));
+    const filtered = slots.map((entry) => filterQsosAndPointsByTsRange(
+      entry.snapshot.qsoData?.qsos || [],
+      getEffectivePointsByIndex(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || []),
+      range
+    ));
+    const maps = filtered.map((entry) => buildMinutePointMapFromQsos(entry.qsos, entry.pointsByIndex));
     const ranges = maps.map((map) => getMinuteRangeFromMap(map)).filter(Boolean);
     if (!ranges.length) {
-      const htmlBlocks = slots.map((entry) => (entry.ready ? '<p>No points to analyze.</p>' : `<p>No ${entry.label} loaded.</p>`));
+      const message = range ? 'No points inside the locked time range.' : 'No points to analyze.';
+      const htmlBlocks = slots.map((entry) => (entry.ready ? `<p>${message}</p>` : `<p>No ${entry.label} loaded.</p>`));
       return renderComparePanels(slots, htmlBlocks, 'points_by_minute');
     }
     const minMinute = Math.min(...ranges.map((r) => r.minMinute));
@@ -19988,6 +20504,7 @@
     wrapWideTables(dom.viewContainer, reportId);
     makeTablesSortable(dom.viewContainer);
     bindCompareScrollSync(reportId);
+    bindCompareCrossHighlights(reportId);
     attachLongReportJumpBar(dom.viewContainer, reportId);
     const compareToggleButtons = dom.viewContainer.querySelectorAll('.compare-ui-toggle');
     compareToggleButtons.forEach((btn) => {
@@ -19999,6 +20516,29 @@
           if (normalized === state.compareScoreMode) return;
           state.compareScoreMode = normalized;
           renderReportWithLoading(reports[state.activeIndex]);
+          return;
+        }
+        const rangeAction = String(btn.dataset.compareRangeAction || '').trim().toLowerCase();
+        if (rangeAction === 'lock-current') {
+          const currentRange = cloneTsRange(state.logTimeRange);
+          if (!currentRange) {
+            showOverlayNotice('Apply a time filter in Log first, then lock it for compare.', 2600);
+            return;
+          }
+          state.compareTimeRangeLock = currentRange;
+          renderReportWithLoading(reports[state.activeIndex]);
+          return;
+        }
+        if (rangeAction === 'clear-lock') {
+          if (!state.compareTimeRangeLock) return;
+          state.compareTimeRangeLock = null;
+          renderReportWithLoading(reports[state.activeIndex]);
+          return;
+        }
+        const perspectiveAction = String(btn.dataset.comparePerspectiveAction || '').trim().toLowerCase();
+        if (perspectiveAction === 'save') {
+          const saved = saveCurrentComparePerspective();
+          showOverlayNotice(`Saved perspective: ${saved.label}`, 2200);
           return;
         }
         const toggle = String(btn.dataset.compareToggle || '').trim().toLowerCase();
@@ -20023,6 +20563,43 @@
           return;
         }
         setActiveReportById(targetId, { silent: true });
+      });
+    });
+    const compareFocusButtons = dom.viewContainer.querySelectorAll('[data-compare-focus-cell-key]');
+    compareFocusButtons.forEach((btn) => {
+      btn.addEventListener('click', (evt) => {
+        evt.preventDefault();
+        const cellKey = String(btn.dataset.compareFocusCellKey || '').trim();
+        if (!cellKey) return;
+        const baseId = getFocusReportId(reportId);
+        const grid = dom.viewContainer instanceof HTMLElement
+          ? dom.viewContainer.querySelector(`.compare-grid[data-compare-report="${baseId}"]`)
+          : null;
+        if (!(grid instanceof HTMLElement)) return;
+        const escapeSelector = (value) => (
+          window.CSS && typeof window.CSS.escape === 'function'
+            ? window.CSS.escape(value)
+            : value.replace(/["\\]/g, '\\$&')
+        );
+        const selector = `[data-compare-cell-key="${escapeSelector(cellKey)}"]`;
+        const cells = Array.from(grid.querySelectorAll(selector));
+        if (!cells.length) {
+          showOverlayNotice('No matching compare cell is visible for that jump.', 2200);
+          return;
+        }
+        clearCompareCrossHighlights(grid);
+        cells.forEach((cell) => cell.classList.add('compare-highlight-cell', 'compare-focus-target'));
+        const rowKey = String(cells[0].closest('[data-compare-row-key]')?.getAttribute('data-compare-row-key') || '');
+        if (rowKey) {
+          const rowSelector = `[data-compare-row-key="${escapeSelector(rowKey)}"]`;
+          grid.querySelectorAll(rowSelector).forEach((row) => row.classList.add('compare-highlight-row'));
+        }
+        const reduceMotion = Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        cells[0].scrollIntoView({
+          block: 'center',
+          inline: 'center',
+          behavior: reduceMotion ? 'auto' : 'smooth'
+        });
       });
     });
     const chartModeButtons = dom.viewContainer.querySelectorAll('.chart-mode-btn');
@@ -20750,6 +21327,8 @@
       const saveBtn = document.querySelector('.session-save');
       const loadBtn = document.querySelector('.session-load');
       const fileInput = document.getElementById('sessionFileInput');
+      const perspectiveApplyButtons = document.querySelectorAll('.session-perspective-apply');
+      const perspectiveDeleteButtons = document.querySelectorAll('.session-perspective-delete');
       if (permalinkBtn) {
         permalinkBtn.addEventListener('click', async () => {
           const link = buildPermalink();
@@ -20828,6 +21407,31 @@
           }
         });
       }
+      perspectiveApplyButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const perspectiveId = String(btn.dataset.perspectiveId || '').trim();
+          if (!perspectiveId) return;
+          const entry = loadStoredComparePerspectives().find((item) => String(item?.id || '') === perspectiveId);
+          if (!entry) {
+            showOverlayNotice('Saved perspective not found.', 2400);
+            return;
+          }
+          applyStoredComparePerspective(entry);
+          showOverlayNotice(`Applied perspective: ${entry.label || 'Saved perspective'}`, 2200);
+        });
+      });
+      perspectiveDeleteButtons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const perspectiveId = String(btn.dataset.perspectiveId || '').trim();
+          if (!perspectiveId) return;
+          if (!deleteStoredComparePerspective(perspectiveId)) {
+            showOverlayNotice('Unable to delete saved perspective.', 2400);
+            return;
+          }
+          renderReportWithLoading(reports[state.activeIndex]);
+          showOverlayNotice('Saved perspective deleted.', 2000);
+        });
+      });
     }
     if (reportId === 'raw_log') {
       const buttons = document.querySelectorAll('.raw-log-console');

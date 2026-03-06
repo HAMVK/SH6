@@ -35,6 +35,10 @@
       <td class="no-print sidebar" style="width:17%" valign="top">
         <div style="width:100%;min-width:220px;" class="mdv">
           <div class="nav-tools">
+            <label class="nav-search-label" for="navSearchInput">Command / report search</label>
+            <input id="navSearchInput" type="search" placeholder="Jump to reports, tools, and views" autocomplete="off" spellcheck="false">
+            <div class="nav-search-hint">Press <kbd>/</kbd> or <kbd>Ctrl/Cmd</kbd> + <kbd>K</kbd></div>
+            <div class="nav-search-empty" id="navSearchEmpty" hidden aria-hidden="true"></div>
             <div class="compare-toggle" role="group" aria-label="Analysis mode">
               <div class="compare-toggle-title">Analysis mode</div>
               <div class="compare-options">
