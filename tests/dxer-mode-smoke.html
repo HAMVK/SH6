@@ -104,6 +104,14 @@
             return res.text();
           })
         ]);
+        const sessionCodecRes = await fetch('../modules/session/codec.js', { cache: 'no-store' });
+        let sessionCodecSource = '';
+        if (!sessionCodecRes.ok) {
+          add('Session codec module is readable', false, `Unable to read modules/session/codec.js (${sessionCodecRes.status})`);
+        } else {
+          sessionCodecSource = await sessionCodecRes.text();
+          add('Session codec module is readable', true, '');
+        }
 
         // Analysis mode scaffolding
         expect(mainSource, "const ANALYSIS_MODE_CONTESTER = 'contester';", 'Has contester mode constant');
@@ -115,8 +123,10 @@
 
         // Session payload includes analysisMode
         expect(mainSource, 'analysisMode: state.analysisMode', 'Session payload stores analysisMode');
-        expect(mainSource, 'if (payload.analysisMode === ANALYSIS_MODE_DXER) compact.am = payload.analysisMode;', 'Compact payload saves analysisMode');
-        expect(mainSource, 'const analysisMode = normalizeAnalysisMode(compact.am);', 'Compact payload restores analysisMode');
+        expect(mainSource, "const SESSION_CODEC_MODULE_URL = './modules/session/codec.js?v=6.1.21';", 'Main.js imports the session codec module');
+        expect(mainSource, 'function loadSessionCodecModule()', 'Main.js loads the session codec module');
+        expect(sessionCodecSource, 'if (payload.analysisMode === analysisModeDxer) compact.am = payload.analysisMode;', 'Compact payload saves analysisMode');
+        expect(sessionCodecSource, 'const analysisMode = normalizeAnalysisMode(compact.am);', 'Compact payload restores analysisMode');
         expect(mainSource, 'state.analysisMode = normalizeAnalysisMode(migrated.analysisMode)', 'Session load restores analysisMode');
         expect(mainSource, 'const hadAnalysisMode = Object.prototype.hasOwnProperty.call(migrated, \'analysisMode\');', 'Legacy session load fallback path handles missing mode');
 
