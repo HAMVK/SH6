@@ -170,8 +170,11 @@
     'continents',
     'zones_cq',
     'zones_itu',
+    'prefixes',
     'callsign_length',
-    'callsign_structure'
+    'callsign_structure',
+    'distance',
+    'beam_heading'
   ]);
   const COMPARE_TIME_LOCK_REPORTS = new Set([
     'qs_by_hour_sheet',
@@ -2087,9 +2090,9 @@
       case 'log':
         return state.compareEnabled ? renderLogCompareContent() : renderLogContent();
       case 'all_callsigns':
-        return renderAllCallsignsContent();
+        return renderAllCallsignsReportContent();
       case 'not_in_master':
-        return renderNotInMasterContent();
+        return renderNotInMasterReportContent();
       case 'session':
         return renderSessionPageContent();
       case 'competitor_coach':
@@ -2097,19 +2100,25 @@
       case 'agent_briefing':
         return renderAgentBriefingContent();
       case 'dupes':
-        return renderDupesContent();
+        return renderDupesReportContent();
       case 'countries':
-        return renderCountriesContent();
+        return renderCountriesReportContent();
       case 'continents':
-        return renderContinentsContent();
+        return renderContinentsReportContent();
       case 'zones_cq':
-        return renderCqZonesContent();
+        return renderCqZonesReportContent();
       case 'zones_itu':
-        return renderItuZonesContent();
+        return renderItuZonesReportContent();
+      case 'prefixes':
+        return renderPrefixesReportContent();
       case 'callsign_length':
-        return renderCallsignLengthContent();
+        return renderCallsignLengthReportContent();
       case 'callsign_structure':
-        return renderCallsignStructureContent();
+        return renderCallsignStructureReportContent();
+      case 'distance':
+        return renderDistanceReportContent();
+      case 'beam_heading':
+        return renderBeamHeadingReportContent();
       default:
         return '';
     }
@@ -12421,8 +12430,16 @@
     `;
   }
 
+  function renderDupesCompareContent() {
+    return renderRetainedComparePanels('dupes', () => renderDupesContent());
+  }
+
+  function renderDupesReportContent() {
+    return state.compareEnabled ? renderDupesCompareContent() : renderDupesContent();
+  }
+
   function renderDupes() {
-    return renderRetainedReportShell('dupes', renderDupesContent());
+    return renderRetainedReportShell('dupes', renderDupesReportContent());
   }
 
   function renderExportPage() {
@@ -16363,8 +16380,16 @@
     });
   }
 
+  function renderCountriesCompareContent() {
+    return renderCountriesCompareAligned();
+  }
+
+  function renderCountriesReportContent() {
+    return state.compareEnabled ? renderCountriesCompareContent() : renderCountriesContent();
+  }
+
   function renderCountries() {
-    return renderRetainedReportShell('countries', renderCountriesContent());
+    return renderRetainedReportShell('countries', renderCountriesReportContent());
   }
 
   function buildContinentListFromDerived(derived) {
@@ -16470,8 +16495,16 @@
     });
   }
 
+  function renderContinentsCompareContent() {
+    return renderContinentsCompareAligned();
+  }
+
+  function renderContinentsReportContent() {
+    return state.compareEnabled ? renderContinentsCompareContent() : renderContinentsContent();
+  }
+
   function renderContinents() {
-    return renderRetainedReportShell('continents', renderContinentsContent());
+    return renderRetainedReportShell('continents', renderContinentsReportContent());
   }
 
   function buildZoneListFromDerived(derived, field) {
@@ -16622,8 +16655,16 @@
     });
   }
 
+  function renderCqZonesCompareContent() {
+    return renderZoneCompareAligned('cq');
+  }
+
+  function renderCqZonesReportContent() {
+    return state.compareEnabled ? renderCqZonesCompareContent() : renderCqZonesContent();
+  }
+
   function renderCqZones() {
-    return renderRetainedReportShell('zones_cq', renderCqZonesContent());
+    return renderRetainedReportShell('zones_cq', renderCqZonesReportContent());
   }
 
   function renderItuZonesContent() {
@@ -16643,8 +16684,16 @@
     });
   }
 
+  function renderItuZonesCompareContent() {
+    return renderZoneCompareAligned('itu');
+  }
+
+  function renderItuZonesReportContent() {
+    return state.compareEnabled ? renderItuZonesCompareContent() : renderItuZonesContent();
+  }
+
   function renderItuZones() {
-    return renderRetainedReportShell('zones_itu', renderItuZonesContent());
+    return renderRetainedReportShell('zones_itu', renderItuZonesReportContent());
   }
 
   function renderZoneMonthRowsFromList(list, derived, field, monthColumns) {
@@ -17664,7 +17713,7 @@
           <td class="tl wrap-cell">${listSafe} </td>
         </tr>
       `;
-    }).join('');
+    });
   }
 
   function renderPrefixesTable(rows) {
@@ -17672,19 +17721,39 @@
       <table class="mtc" style="margin-top:5px;margin-bottom:10px;">
         <colgroup><col width="40px" span="3" align="center"/><col width="200px" align="left"/><col span="2" width="40px" align="center"/></colgroup>
         <tr class="thc"><th>#</th><th>Cont.</th><th>ID</th><th>Country</th><th>Count</th><th>% of pfx</th><th>Worked pfx</th></tr>
-        ${rows}
+        ${joinTableRows(rows)}
       </table>
     `;
   }
 
-  function renderPrefixes() {
+  function renderPrefixesContent() {
     if (!state.derived) return renderPlaceholder({ id: 'prefixes', title: 'Prefixes' });
     if (!state.ctyTable || !state.ctyTable.length) return '<p>cty.dat not loaded.</p>';
     const totalPrefixes = state.derived.prefixSummary.length || 0;
     const groups = buildPrefixGroups(state.derived);
     const list = buildPrefixListFromGroups(groups);
     const rows = renderPrefixesRowsFromList(list, groups, totalPrefixes);
-    return renderPrefixesTable(rows);
+    return renderRetainedVirtualTable('prefixes', {
+      rows,
+      rowHeight: 30,
+      overscan: 10,
+      columnCount: 7,
+      emptyHtml: '<tr class="td1"><td colspan="7">No prefix data available.</td></tr>',
+      colgroupHtml: '<colgroup><col width="40px" span="3" align="center"/><col width="200px" align="left"/><col span="2" width="40px" align="center"/></colgroup>',
+      headerHtml: '<tr class="thc"><th>#</th><th>Cont.</th><th>ID</th><th>Country</th><th>Count</th><th>% of pfx</th><th>Worked pfx</th></tr>'
+    });
+  }
+
+  function renderPrefixesCompareContent() {
+    return renderPrefixesCompareAligned();
+  }
+
+  function renderPrefixesReportContent() {
+    return state.compareEnabled ? renderPrefixesCompareContent() : renderPrefixesContent();
+  }
+
+  function renderPrefixes() {
+    return renderRetainedReportShell('prefixes', renderPrefixesReportContent());
   }
 
   function buildCallsignLengthList(derived) {
@@ -17753,8 +17822,16 @@
     });
   }
 
+  function renderCallsignLengthCompareContent() {
+    return renderCallsignLengthCompareAligned();
+  }
+
+  function renderCallsignLengthReportContent() {
+    return state.compareEnabled ? renderCallsignLengthCompareContent() : renderCallsignLengthContent();
+  }
+
   function renderCallsignLength() {
-    return renderRetainedReportShell('callsign_length', renderCallsignLengthContent());
+    return renderRetainedReportShell('callsign_length', renderCallsignLengthReportContent());
   }
 
   function buildStructureList(derived) {
@@ -17827,8 +17904,16 @@
     });
   }
 
+  function renderCallsignStructureCompareContent() {
+    return renderCallsignStructureCompareAligned();
+  }
+
+  function renderCallsignStructureReportContent() {
+    return state.compareEnabled ? renderCallsignStructureCompareContent() : renderCallsignStructureContent();
+  }
+
   function renderCallsignStructure() {
-    return renderRetainedReportShell('callsign_structure', renderCallsignStructureContent());
+    return renderRetainedReportShell('callsign_structure', renderCallsignStructureReportContent());
   }
 
   function buildDistanceList(derived) {
@@ -17883,7 +17968,7 @@
           <td class="tac">${mapLink}</td>
         </tr>
       `;
-    }).join('');
+    });
   }
 
   function renderDistanceTable(rows) {
@@ -17899,19 +17984,50 @@
           <th rowspan="2">Map</th>
         </tr>
         <tr class="thc">${bandHeaders}<th>All</th></tr>
-        ${rows}
+        ${joinTableRows(rows)}
         ${mapAllFooter(bandCols.length + 4)}
       </table>
     `;
   }
 
-  function renderDistance() {
+  function renderDistanceContent() {
     if (!state.derived || !state.derived.distanceSummary) return renderPlaceholder({ id: 'distance', title: 'Distance' });
     const ds = state.derived.distanceSummary;
     if (!ds.count) return '<p>No distance data (station or remote locations missing).</p>';
     const list = buildDistanceList(state.derived);
     const rows = renderDistanceRowsFromList(list, state.derived);
-    return renderDistanceTable(rows);
+    const bandCols = getDisplayBandList();
+    const qsoCols = bandCols.length + 1;
+    const bandHeaders = bandCols.map((b) => `<th>${escapeHtml(formatBandLabel(b))}</th>`).join('');
+    return renderRetainedVirtualTable('distance', {
+      rows,
+      rowHeight: 28,
+      overscan: 10,
+      columnCount: bandCols.length + 4,
+      emptyHtml: `<tr class="td1"><td colspan="${bandCols.length + 4}">No distance data available.</td></tr>`,
+      headerHtml: `
+        <tr class="thc">
+          <th rowspan="2">Distance, km</th>
+          <th colspan="${qsoCols}">QSOs</th>
+          <th rowspan="2">%</th>
+          <th rowspan="2">Map</th>
+        </tr>
+        <tr class="thc">${bandHeaders}<th>All</th></tr>
+      `,
+      footerHtml: mapAllFooter(bandCols.length + 4)
+    });
+  }
+
+  function renderDistanceCompareContent() {
+    return renderDistanceCompareAligned();
+  }
+
+  function renderDistanceReportContent() {
+    return state.compareEnabled ? renderDistanceCompareContent() : renderDistanceContent();
+  }
+
+  function renderDistance() {
+    return renderRetainedReportShell('distance', renderDistanceReportContent());
   }
 
   function buildHeadingList(derived) {
@@ -17941,7 +18057,7 @@
     const total = derived?.headingSummary?.reduce((sum, h) => sum + h.count, 0) || 0;
     const maxCount = derived?.headingSummary?.reduce((max, h) => Math.max(max, h.count), 1) || 1;
     const rowColspan = bands.length + 5;
-    let rows = '';
+    const rows = [];
     list.forEach((info, idx) => {
       const h = map.get(info.start);
       const pct = h && total ? ((h.count / total) * 100).toFixed(1) : '';
@@ -17954,7 +18070,7 @@
       }).join('');
       const barWidth = h ? Math.round((h.count / maxCount) * 100) : 0;
       const mapLink = h ? `<a href="#" class="map-link" data-scope="heading" data-key="${headingAttr}">map</a>` : '';
-      rows += `
+      rows.push(`
         <tr class="${idx % 2 === 0 ? 'td1' : 'td0'}">
           <td>${sectorText}</td>
           ${bandCells}
@@ -17963,9 +18079,9 @@
           <td style="text-align:left"><div class="sum" style="width:${barWidth}%" /></td>
           <td class="tac">${mapLink}</td>
         </tr>
-      `;
+      `);
       if (info.start % 90 === 80) {
-        rows += `<tr><td colspan="${rowColspan}"><hr/></td></tr>`;
+        rows.push(`<tr><td colspan="${rowColspan}"><hr/></td></tr>`);
       }
     });
     return rows;
@@ -17980,18 +18096,45 @@
         <colgroup><col width="100px" align="center"/><col span="${bands.length + 1}" width="60px"/><col width="56px"/></colgroup>
         <tr class="thc"><th rowspan="2">Heading, &#176;</th><th colspan="${qsoCols}">QSOs</th><th colspan="2" rowspan="2">%</th><th rowspan="2">Map</th></tr>
         <tr class="thc">${bandHeaders}<th>All</th></tr>
-        ${rows}
+        ${joinTableRows(rows)}
         ${mapAllFooter(bands.length + 5)}
       </table>
     `;
   }
 
-  function renderBeamHeading() {
+  function renderBeamHeadingContent() {
     if (!state.derived || !state.derived.headingSummary) return renderPlaceholder({ id: 'beam_heading', title: 'Beam heading' });
     const list = buildHeadingList(state.derived);
     const rows = renderHeadingRowsFromList(list, state.derived);
-    if (!rows) return '<p>No heading data.</p>';
-    return renderHeadingTable(rows);
+    if (!rows.length) return '<p>No heading data.</p>';
+    const bands = getDisplayBandList();
+    const qsoCols = bands.length + 1;
+    const bandHeaders = bands.map((b) => `<th>${escapeHtml(formatBandLabel(b))}</th>`).join('');
+    return renderRetainedVirtualTable('beam_heading', {
+      rows,
+      rowHeight: 28,
+      overscan: 10,
+      columnCount: bands.length + 5,
+      emptyHtml: `<tr class="td1"><td colspan="${bands.length + 5}">No heading data available.</td></tr>`,
+      colgroupHtml: `<colgroup><col width="100px" align="center"/><col span="${bands.length + 1}" width="60px"/><col width="56px"/></colgroup>`,
+      headerHtml: `
+        <tr class="thc"><th rowspan="2">Heading, &#176;</th><th colspan="${qsoCols}">QSOs</th><th colspan="2" rowspan="2">%</th><th rowspan="2">Map</th></tr>
+        <tr class="thc">${bandHeaders}<th>All</th></tr>
+      `,
+      footerHtml: mapAllFooter(bands.length + 5)
+    });
+  }
+
+  function renderBeamHeadingCompareContent() {
+    return renderBeamHeadingCompareAligned();
+  }
+
+  function renderBeamHeadingReportContent() {
+    return state.compareEnabled ? renderBeamHeadingCompareContent() : renderBeamHeadingContent();
+  }
+
+  function renderBeamHeading() {
+    return renderRetainedReportShell('beam_heading', renderBeamHeadingReportContent());
   }
 
   function renderMapView() {
@@ -18100,6 +18243,14 @@
     `;
   }
 
+  function renderAllCallsignsCompareContent() {
+    return renderRetainedComparePanels('all_callsigns', () => renderAllCallsignsContent());
+  }
+
+  function renderAllCallsignsReportContent() {
+    return state.compareEnabled ? renderAllCallsignsCompareContent() : renderAllCallsignsContent();
+  }
+
   function renderNotInMasterContent() {
     if (!state.derived) return renderPlaceholder({ id: 'not_in_master', title: 'Not in master' });
     if (!state.masterSet || state.masterSet.size === 0) return '<p>Master file not loaded.</p>';
@@ -18151,12 +18302,20 @@
     `;
   }
 
+  function renderNotInMasterCompareContent() {
+    return renderRetainedComparePanels('not_in_master', () => renderNotInMasterContent());
+  }
+
+  function renderNotInMasterReportContent() {
+    return state.compareEnabled ? renderNotInMasterCompareContent() : renderNotInMasterContent();
+  }
+
   function renderAllCallsigns() {
-    return renderRetainedReportShell('all_callsigns', renderAllCallsignsContent());
+    return renderRetainedReportShell('all_callsigns', renderAllCallsignsReportContent());
   }
 
   function renderNotInMaster() {
-    return renderRetainedReportShell('not_in_master', renderNotInMasterContent());
+    return renderRetainedReportShell('not_in_master', renderNotInMasterReportContent());
   }
 
   function renderCountriesByTimeRowsFromList(list, map, countryInfo, bandFilter) {
@@ -19654,6 +19813,16 @@
     return merged;
   }
 
+  function renderRetainedComparePanels(reportId, renderSlotContent) {
+    const slots = getActiveCompareSnapshots();
+    const htmlBlocks = slots.map((entry) => (
+      entry.ready
+        ? withSlotState(entry.snapshot, () => withStaticVirtualTableRender(() => renderSlotContent(entry)), { slotId: entry.id })
+        : `<p>No ${entry.label} loaded.</p>`
+    ));
+    return renderComparePanels(slots, htmlBlocks, reportId);
+  }
+
   function renderComparePanels(slotEntries, htmlBlocks, reportId, options = {}) {
     const baseId = String(reportId || '').split('::')[0];
     const narrowReports = new Set([
@@ -20527,6 +20696,15 @@
     if (report.id === 'breaks') {
       return renderBreaksCompare();
     }
+    if (report.id === 'dupes') {
+      return renderDupes();
+    }
+    if (report.id === 'all_callsigns') {
+      return renderAllCallsigns();
+    }
+    if (report.id === 'not_in_master') {
+      return renderNotInMaster();
+    }
     if (report.id === 'passed_qsos') {
       const slots = getActiveCompareSnapshots();
       const htmlBlocks = slots.map((entry) => (
@@ -20567,21 +20745,21 @@
       });
       return renderComparePanels(slots, htmlBlocks, 'possible_errors');
     }
-    if (report.id === 'countries') return renderCountriesCompareAligned();
-    if (report.id === 'continents') return renderContinentsCompareAligned();
-    if (report.id === 'zones_cq') return renderZoneCompareAligned('cq');
-    if (report.id === 'zones_itu') return renderZoneCompareAligned('itu');
+    if (report.id === 'countries') return renderCountries();
+    if (report.id === 'continents') return renderContinents();
+    if (report.id === 'zones_cq') return renderCqZones();
+    if (report.id === 'zones_itu') return renderItuZones();
     if (report.id === 'countries_by_month') return renderCountriesByMonthCompareAligned();
     if (report.id === 'countries_by_year') return renderCountriesByYearCompareAligned();
     if (report.id === 'zones_cq_by_month') return renderZoneMonthCompareAligned('cq');
     if (report.id === 'zones_itu_by_month') return renderZoneMonthCompareAligned('itu');
     if (report.id === 'zones_cq_by_year') return renderZoneYearCompareAligned('cq');
     if (report.id === 'zones_itu_by_year') return renderZoneYearCompareAligned('itu');
-    if (report.id === 'prefixes') return renderPrefixesCompareAligned();
-    if (report.id === 'callsign_length') return renderCallsignLengthCompareAligned();
-    if (report.id === 'callsign_structure') return renderCallsignStructureCompareAligned();
-    if (report.id === 'distance') return renderDistanceCompareAligned();
-    if (report.id === 'beam_heading') return renderBeamHeadingCompareAligned();
+    if (report.id === 'prefixes') return renderPrefixes();
+    if (report.id === 'callsign_length') return renderCallsignLength();
+    if (report.id === 'callsign_structure') return renderCallsignStructure();
+    if (report.id === 'distance') return renderDistance();
+    if (report.id === 'beam_heading') return renderBeamHeading();
     if (report.id === 'qs_per_station') return renderQsPerStationCompareAligned();
     const slots = getActiveCompareSnapshots();
     const htmlBlocks = slots.map((entry) => (
