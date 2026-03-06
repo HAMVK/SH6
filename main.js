@@ -158,7 +158,7 @@
     [COMPARE_SCORE_MODE_CLAIMED]: 'Claimed score',
     [COMPARE_SCORE_MODE_LOGGED]: 'Logged points'
   });
-  const RETAINED_REPORT_IDS = new Set(['log', 'all_callsigns', 'not_in_master', 'session']);
+  const RETAINED_REPORT_IDS = new Set(['log', 'all_callsigns', 'not_in_master', 'session', 'competitor_coach', 'agent_briefing']);
   const COMPARE_TIME_LOCK_REPORTS = new Set([
     'qs_by_hour_sheet',
     'points_by_hour_sheet',
@@ -2077,6 +2077,10 @@
         return renderNotInMasterContent();
       case 'session':
         return renderSessionPageContent();
+      case 'competitor_coach':
+        return renderCompetitorCoachContent();
+      case 'agent_briefing':
+        return renderAgentBriefingContent();
       default:
         return '';
     }
@@ -10144,7 +10148,7 @@
     `;
   }
 
-  function renderCompetitorCoach() {
+  function renderCompetitorCoachContent() {
     if (state.analysisMode === ANALYSIS_MODE_DXER) {
       return renderPlaceholder({
         id: 'competitor_coach',
@@ -10898,7 +10902,11 @@
     `;
   }
 
-  function renderAgentBriefing() {
+  function renderCompetitorCoach() {
+    return renderRetainedReportShell('competitor_coach', renderCompetitorCoachContent());
+  }
+
+  function renderAgentBriefingContent() {
     if (!state.derived || !state.qsoData) {
       return renderPlaceholder({ id: 'agent_briefing', title: 'Agent briefing' });
     }
@@ -10996,6 +11004,10 @@
         </div>
       </div>
     `;
+  }
+
+  function renderAgentBriefing() {
+    return renderRetainedReportShell('agent_briefing', renderAgentBriefingContent());
   }
 
   function renderOperators() {
