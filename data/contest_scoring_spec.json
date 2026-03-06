@@ -47,6 +47,7 @@
       "multipliers": {
         "model": "sum_of_groups",
         "counting_scope": "per_band",
+        "credit_on_zero_point_valid_qso": true,
         "groups": [
           "cq_zone",
           "country"

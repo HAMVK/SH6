@@ -148,6 +148,14 @@
   const UI_THEME_NT = 'nt';
   const CHART_MODE_ABSOLUTE = 'absolute';
   const CHART_MODE_NORMALIZED = 'normalized';
+  const COMPARE_SCORE_MODE_COMPUTED = 'computed';
+  const COMPARE_SCORE_MODE_CLAIMED = 'claimed';
+  const COMPARE_SCORE_MODE_LOGGED = 'logged';
+  const COMPARE_SCORE_MODE_LABELS = Object.freeze({
+    [COMPARE_SCORE_MODE_COMPUTED]: 'Computed score',
+    [COMPARE_SCORE_MODE_CLAIMED]: 'Claimed score',
+    [COMPARE_SCORE_MODE_LOGGED]: 'Logged points'
+  });
   const SQLJS_BASE_URLS = [
     'https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/',
     'https://unpkg.com/sql.js@1.8.0/dist/'
@@ -494,6 +502,7 @@
       appVersion: APP_VERSION,
       analysisMode: state.analysisMode,
       compareCount: state.compareCount,
+      compareScoreMode: state.compareScoreMode,
       compareFocus: state.compareFocus,
       globalBandFilter: state.globalBandFilter || '',
       breakThreshold: state.breakThreshold,
@@ -776,6 +785,7 @@
     if (payload.analysisMode === ANALYSIS_MODE_DXER) compact.am = payload.analysisMode;
     const compareCount = Number(payload.compareCount);
     if (Number.isFinite(compareCount) && compareCount !== 1) compact.c = compareCount;
+    if (payload.compareScoreMode && payload.compareScoreMode !== COMPARE_SCORE_MODE_COMPUTED) compact.cs = payload.compareScoreMode;
     const focus = compactCompareFocus(payload.compareFocus);
     if (focus) compact.f = focus;
     if (payload.globalBandFilter) compact.g = payload.globalBandFilter;
@@ -808,6 +818,7 @@
     if (!compact || typeof compact !== 'object' || Number(compact.v) !== 2) return null;
     const analysisMode = normalizeAnalysisMode(compact.am);
     const compareCount = Math.min(4, Math.max(1, Number(compact.c) || 1));
+    const compareScoreMode = normalizeCompareScoreMode(compact.cs);
     const breakThreshold = Number(compact.b);
     const passedQsoWindow = Number(compact.p);
     const logPageSize = Number(compact.z);
@@ -820,6 +831,7 @@
       appVersion: APP_VERSION,
       analysisMode,
       compareCount,
+      compareScoreMode,
       compareFocus: inflateCompareFocus(compact.f),
       globalBandFilter: typeof compact.g === 'string' ? compact.g : '',
       globalYearsFilter: normalizePeriodYears(compact[PERIOD_FILTER_COMPACT_YEARS]),
@@ -894,6 +906,18 @@
 
   function resolveAnalysisMode(mode) {
     return normalizeAnalysisMode(mode);
+  }
+
+  function normalizeCompareScoreMode(rawMode) {
+    const value = String(rawMode || '').trim().toLowerCase();
+    if (value === COMPARE_SCORE_MODE_CLAIMED) return COMPARE_SCORE_MODE_CLAIMED;
+    if (value === COMPARE_SCORE_MODE_LOGGED) return COMPARE_SCORE_MODE_LOGGED;
+    return COMPARE_SCORE_MODE_COMPUTED;
+  }
+
+  function resolveCompareScoreModeLabel(mode) {
+    const key = normalizeCompareScoreMode(mode);
+    return COMPARE_SCORE_MODE_LABELS[key] || COMPARE_SCORE_MODE_LABELS[COMPARE_SCORE_MODE_COMPUTED];
   }
 
   function resolveAnalysisModeSuggestion(logData, derived) {
@@ -978,6 +1002,7 @@
     state.sessionNotice = [];
     state.allCallsignsCountryFilter = '';
     state.analysisMode = normalizeAnalysisMode(migrated.analysisMode) || ANALYSIS_MODE_DEFAULT;
+    state.compareScoreMode = normalizeCompareScoreMode(migrated.compareScoreMode);
     if (dom.analysisModeRadios && dom.analysisModeRadios.length) {
       dom.analysisModeRadios.forEach((radio) => {
         radio.checked = String(radio.value) === state.analysisMode;
@@ -1257,6 +1282,7 @@
     analysisMode: ANALYSIS_MODE_DEFAULT,
     analysisModeSuggestion: null,
     compareCount: 1,
+    compareScoreMode: COMPARE_SCORE_MODE_COMPUTED,
     compareCountBeforeDxer: 1,
     compareSyncEnabled: true,
     compareStickyEnabled: true,
@@ -1463,6 +1489,48 @@
   function normalizeChartMetricMode(value) {
     const key = String(value || '').trim().toLowerCase();
     return key === CHART_MODE_NORMALIZED ? CHART_MODE_NORMALIZED : CHART_MODE_ABSOLUTE;
+  }
+
+  function normalizeScoringDuplicatePolicy(value) {
+    const key = String(value || '').trim().toLowerCase();
+    if (key === 'include_all_dupes' || key === 'include_dupes') return 'include_all_dupes';
+    return 'exclude_all_dupes';
+  }
+
+  function resolveScoringDuplicatePolicy(rule) {
+    return normalizeScoringDuplicatePolicy(firstNonNull(
+      rule?.duplicate_policy,
+      rule?.qso_points?.duplicate_policy
+    ));
+  }
+
+  function normalizeMultiplierCreditPolicy(value) {
+    const key = String(value || '').trim().toLowerCase();
+    if (key === 'valid_qso_allow_zero_points' || key === 'valid_qso_zero_points' || key === 'valid_qso_allow_zero_point') {
+      return 'valid_qso_allow_zero_points';
+    }
+    return 'positive_points_non_dupe';
+  }
+
+  function resolveMultiplierCreditPolicy(rule) {
+    if (rule?.multipliers?.credit_on_zero_point_valid_qso === true) {
+      return 'valid_qso_allow_zero_points';
+    }
+    return normalizeMultiplierCreditPolicy(rule?.multipliers?.credit_policy);
+  }
+
+  function describeScoringDuplicatePolicy(value) {
+    if (!value) return 'N/A';
+    const key = normalizeScoringDuplicatePolicy(value);
+    if (key === 'include_all_dupes') return 'Duplicates keep QSO-point credit.';
+    return 'Duplicates are excluded from QSO-point credit.';
+  }
+
+  function describeMultiplierCreditPolicy(value) {
+    if (!value) return 'N/A';
+    const key = normalizeMultiplierCreditPolicy(value);
+    if (key === 'valid_qso_allow_zero_points') return 'Valid non-dupe QSOs may earn multipliers even with zero QSO points.';
+    return 'Only positive-point, non-dupe QSOs earn multipliers.';
   }
 
   function getLoadedCompareSlots() {
@@ -4949,6 +5017,8 @@
   function computeRuleQsoPoints(rule, qsos, station, assumptions) {
     const runtime = makeScoringRuntime(station);
     const model = String(rule?.qso_points?.model || '').trim();
+    const duplicatePolicy = resolveScoringDuplicatePolicy(rule);
+    const scoreDuplicates = duplicatePolicy === 'include_all_dupes';
     const pointsByIndex = new Array((qsos || []).length).fill(0);
     let qsoPointsTotal = 0;
     let weightedQsoPointsTotal = 0;
@@ -4976,9 +5046,9 @@
 
     (qsos || []).forEach((q, idx) => {
       const facts = buildQsoScoringFacts(q, station, runtime);
-      const isDuplicate = Boolean(q?.isDupe) && String(rule?.id || '') === 'darc_fieldday';
-      if (facts.call && !isDuplicate) uniqueCalls.add(facts.call);
-      if (isDuplicate) {
+      const isDuplicate = Boolean(q?.isDupe);
+      if (facts.call && (!isDuplicate || scoreDuplicates)) uniqueCalls.add(facts.call);
+      if (isDuplicate && !scoreDuplicates) {
         pointsByIndex[idx] = 0;
         return;
       }
@@ -5139,6 +5209,7 @@
     const model = String(rule?.multipliers?.model || '');
     const configuredGroups = Array.isArray(rule?.multipliers?.groups) ? rule.multipliers.groups : [];
     const configuredScope = String(rule?.multipliers?.counting_scope || 'once_total');
+    const multiplierCreditPolicy = resolveMultiplierCreditPolicy(rule);
     const bandWeights = rule?.multipliers?.band_weights || {};
     let effectiveGroups = configuredGroups.slice();
     let effectiveScope = configuredScope;
@@ -5170,11 +5241,15 @@
     const modeMultiplierSets = { CW: new Set(), SSB: new Set(), DIG: new Set() };
 
     (qsos || []).forEach((q, idx) => {
-      if ((pointState?.pointsByIndex?.[idx] || 0) <= 0) {
-        markScoringRuntime(buildQsoScoringFacts(q, station, runtime), runtime);
+      const facts = buildQsoScoringFacts(q, station, runtime);
+      const pointValue = Number(pointState?.pointsByIndex?.[idx]);
+      const eligible = multiplierCreditPolicy === 'valid_qso_allow_zero_points'
+        ? (!q?.isDupe && facts.validQso && (!Number.isFinite(pointValue) || pointValue >= 0))
+        : (!q?.isDupe && Number.isFinite(pointValue) && pointValue > 0);
+      if (!eligible) {
+        markScoringRuntime(facts, runtime);
         return;
       }
-      const facts = buildQsoScoringFacts(q, station, runtime);
       effectiveGroups.forEach((group) => {
         const value = getMultiplierValue(group, facts, station, runtime, assumptions);
         if (!value) return;
@@ -5377,6 +5452,8 @@
     const subeventId = String(resolved?.bundle?.subeventId || '');
     const station = buildStationScoringProfile(qsos, contestMeta);
     const runtime = makeScoringRuntime(station);
+    const duplicatePolicy = resolveScoringDuplicatePolicy(resolved?.rule);
+    const scoreDuplicates = duplicatePolicy === 'include_all_dupes';
     const pointsByIndex = new Array((qsos || []).length).fill(0);
     const multOnce = new Set();
     const multPerBand = new Set();
@@ -5387,6 +5464,9 @@
 
     (qsos || []).forEach((q, idx) => {
       const facts = buildQsoScoringFacts(q, station, runtime);
+      if (q?.isDupe && !scoreDuplicates) {
+        return;
+      }
       if (!facts.validQso) {
         markScoringRuntime(facts, runtime);
         return;
@@ -5473,12 +5553,17 @@
     const modelId = String(resolved?.bundle?.subeventModelId || '');
     const station = buildStationScoringProfile(qsos, contestMeta);
     const runtime = makeScoringRuntime(station);
+    const duplicatePolicy = resolveScoringDuplicatePolicy(resolved?.rule);
+    const scoreDuplicates = duplicatePolicy === 'include_all_dupes';
     const pointsByIndex = new Array((qsos || []).length).fill(0);
     const multPerBand = new Set();
     let qsoPointsTotal = 0;
 
     (qsos || []).forEach((q, idx) => {
       const facts = buildQsoScoringFacts(q, station, runtime);
+      if (q?.isDupe && !scoreDuplicates) {
+        return;
+      }
       const distance = Number(q?.distance);
       let points = 0;
       if (modelId === 'distance_only') {
@@ -5516,6 +5601,13 @@
     const loggedPointsTotal = computeLoggedPointsTotal(qsos);
     const claimedScoreHeader = parseClaimedScoreNumber(contestMeta?.claimedScore);
     const resolved = resolveContestRuleSet(contestMeta, context);
+    const ruleSpecVersion = String(state.scoringSpec?.spec_version || '');
+    const ruleSpecSource = String(state.scoringSource || '');
+    const duplicatePolicy = resolved?.rule ? resolveScoringDuplicatePolicy(resolved.rule) : '';
+    const multiplierCreditPolicy = resolved?.rule ? resolveMultiplierCreditPolicy(resolved.rule) : '';
+    const ruleReferenceUrl = Array.isArray(resolved?.rule?.official_rules_urls) && resolved.rule.official_rules_urls.length
+      ? String(resolved.rule.official_rules_urls[0] || '')
+      : '';
     if (!resolved.supported) {
       return {
         supported: false,
@@ -5528,6 +5620,11 @@
         ruleName: state.analysisMode === ANALYSIS_MODE_DXER ? 'Unknown rules' : 'Unknown contest',
         claimedScoreHeader,
         loggedPointsTotal,
+        ruleSpecVersion,
+        ruleSpecSource,
+        ruleReferenceUrl,
+        duplicatePolicy,
+        multiplierCreditPolicy,
         computedQsoPointsTotal: null,
         computedMultiplierTotal: null,
         computedScore: null,
@@ -5564,6 +5661,11 @@
         detectionValue: resolved.detectionValue || '',
         ruleId: resolved.ruleId || '',
         ruleName: resolved.rule?.name || resolved.ruleId || '',
+        ruleSpecVersion,
+        ruleSpecSource,
+        ruleReferenceUrl,
+        duplicatePolicy,
+        multiplierCreditPolicy,
         claimedScoreHeader,
         loggedPointsTotal,
         computedQsoPointsTotal: Number.isFinite(bundleScore?.qsoPointsTotal) ? Math.round(bundleScore.qsoPointsTotal) : null,
@@ -5590,6 +5692,11 @@
         detectionValue: resolved.detectionValue || '',
         ruleId: resolved.ruleId || '',
         ruleName: resolved.rule?.name || resolved.ruleId || '',
+        ruleSpecVersion,
+        ruleSpecSource,
+        ruleReferenceUrl,
+        duplicatePolicy,
+        multiplierCreditPolicy,
         claimedScoreHeader,
         loggedPointsTotal,
         computedQsoPointsTotal: null,
@@ -5622,6 +5729,11 @@
       detectionValue: resolved.detectionValue || '',
       ruleId: resolved.ruleId || '',
       ruleName: resolved.rule?.name || resolved.ruleId || '',
+      ruleSpecVersion,
+      ruleSpecSource,
+      ruleReferenceUrl,
+      duplicatePolicy,
+      multiplierCreditPolicy,
       claimedScoreHeader,
       loggedPointsTotal,
       computedQsoPointsTotal: Math.round(scored.pointState.qsoPointsTotal || 0),
@@ -9695,6 +9807,95 @@
     };
   }
 
+  function runScoringRegressionChecks() {
+    const checks = [];
+    const makeStation = (overrides = {}) => ({
+      stationCall: 'S51AA',
+      stationPrefixToken: 'S5',
+      stationCountry: 'Slovenia',
+      stationCountryKey: normalizeCountryName('Slovenia'),
+      stationContinent: 'EU',
+      stationCqZone: 15,
+      stationItuZone: 28,
+      stationIsEu: true,
+      stationIsNa: false,
+      stationIsRu: false,
+      stationIsFrench: false,
+      stationIsDl: false,
+      stationIsWVe: false,
+      stationSentEuRegion: '',
+      stationHasSentExchangeTokens: false,
+      stationIsEuExchangeMember: false,
+      stationPortable: false,
+      ...overrides
+    });
+
+    const duplicateRule = {
+      id: 'generic_fixed',
+      qso_points: {
+        model: 'fixed',
+        rules: [{ points: 5 }]
+      },
+      multipliers: {
+        model: 'none_multiplicative',
+        groups: []
+      }
+    };
+    const duplicateQsos = [
+      { call: 'S52AA', band: '20M', mode: 'CW', country: 'Slovenia', continent: 'EU', cqZone: 15, ituZone: 28 },
+      { call: 'S52AA', band: '20M', mode: 'CW', country: 'Slovenia', continent: 'EU', cqZone: 15, ituZone: 28, isDupe: true }
+    ];
+    const duplicatePointState = computeRuleQsoPoints(duplicateRule, duplicateQsos, makeStation(), new Set());
+    checks.push({
+      name: 'Generic scoring excludes duplicate QSO points by default',
+      passed: duplicatePointState.qsoPointsTotal === 5
+        && duplicatePointState.pointsByIndex[0] === 5
+        && duplicatePointState.pointsByIndex[1] === 0,
+      details: {
+        total: duplicatePointState.qsoPointsTotal,
+        pointsByIndex: duplicatePointState.pointsByIndex
+      }
+    });
+
+    const cqwwLikeRule = {
+      id: 'cqww',
+      qso_points: {
+        model: 'table_by_geography',
+        rules: [
+          { when: 'different_continent', points: 3 },
+          { when: 'same_continent_different_country', points: 1 },
+          { when: 'same_country', points: 0 }
+        ]
+      },
+      multipliers: {
+        model: 'sum_of_groups',
+        counting_scope: 'per_band',
+        credit_on_zero_point_valid_qso: true,
+        groups: ['country']
+      }
+    };
+    const zeroPointQsos = [
+      { call: 'S52BB', band: '20M', mode: 'CW', country: 'Slovenia', continent: 'EU', cqZone: 15, ituZone: 28 },
+      { call: 'S53CC', band: '40M', mode: 'CW', country: 'Slovenia', continent: 'EU', cqZone: 15, ituZone: 28 }
+    ];
+    const zeroPointState = computeRuleQsoPoints(cqwwLikeRule, zeroPointQsos, makeStation(), new Set());
+    const zeroPointMults = computeRuleMultipliers(cqwwLikeRule, zeroPointQsos, makeStation(), zeroPointState, new Set());
+    checks.push({
+      name: 'Zero-point valid QSOs can still credit multipliers when rules allow it',
+      passed: zeroPointState.qsoPointsTotal === 0 && zeroPointMults.total === 2,
+      details: {
+        qsoPointsTotal: zeroPointState.qsoPointsTotal,
+        multiplierTotal: zeroPointMults.total,
+        groupCounts: zeroPointMults.groupCounts
+      }
+    });
+
+    return {
+      passed: checks.every((check) => check.passed),
+      checks
+    };
+  }
+
   function formatDate(ts) {
     if (ts == null) return 'N/A';
     const d = new Date(ts);
@@ -9944,6 +10145,16 @@
     const loggedPointsDisplay = Number.isFinite(loggedPoints) ? `${formatNumberSh6(loggedPoints)} pts` : 'N/A';
     const computedPointsDisplay = Number.isFinite(scoring.computedQsoPointsTotal) ? `${formatNumberSh6(scoring.computedQsoPointsTotal)} pts` : 'N/A';
     const multiplierDisplay = Number.isFinite(scoring.computedMultiplierTotal) ? formatNumberSh6(scoring.computedMultiplierTotal) : 'N/A';
+    const scoringDetection = scoring.detectionMethod
+      ? `${escapeHtml(scoring.detectionMethod)}${scoring.detectionValue ? ` · ${escapeHtml(scoring.detectionValue)}` : ''}`
+      : 'N/A';
+    const scoringSpecVersion = escapeHtml(scoring.ruleSpecVersion || 'N/A');
+    const scoringSpecSource = escapeHtml(scoring.ruleSpecSource || 'N/A');
+    const duplicatePolicyLabel = escapeHtml(describeScoringDuplicatePolicy(scoring.duplicatePolicy));
+    const multiplierCreditLabel = escapeHtml(describeMultiplierCreditPolicy(scoring.multiplierCreditPolicy));
+    const scoringRuleReference = scoring.ruleReferenceUrl
+      ? `<a href="${escapeAttr(scoring.ruleReferenceUrl)}" target="_blank" rel="noopener noreferrer">Official rules</a>`
+      : 'N/A';
     const confidenceLabel = escapeHtml(scoring.confidence || 'unknown');
     const confidenceClass = (scoring.confidence === 'high')
       ? 'loaded'
@@ -9989,6 +10200,12 @@
       ['Computed QSO points', computedPointsDisplay],
       ['Computed multipliers', multiplierDisplay],
       ['Scoring rule', scoringRule],
+      ['Scoring detection', scoringDetection],
+      ['Scoring spec version', scoringSpecVersion],
+      ['Scoring spec source', scoringSpecSource],
+      ['Scoring duplicate policy', duplicatePolicyLabel],
+      ['Scoring multiplier credit', multiplierCreditLabel],
+      ['Rule reference', scoringRuleReference],
       ['Scoring confidence', `<span class="summary-chip ${confidenceClass}">${confidenceLabel}</span>`],
       ['Scoring assumptions', scoringAssumptions || 'None'],
       ['Software', software],
@@ -18720,12 +18937,22 @@
   function renderCompareWorkspaceToolbar(reportId, slotEntries) {
     const safeReportId = String(reportId || '').split('::')[0];
     const reportTitle = reports.find((entry) => entry.id === safeReportId)?.title || safeReportId;
+    const scoreMode = normalizeCompareScoreMode(state.compareScoreMode);
     const slotSummary = (slotEntries || []).map((entry) => {
       const call = escapeHtml(entry.snapshot?.derived?.contestMeta?.stationCallsign || 'N/A');
       const contest = escapeHtml(entry.snapshot?.derived?.contestMeta?.contestId || 'N/A');
       const qsos = entry.snapshot?.qsoData?.qsos?.length || 0;
       return `<span class="compare-workspace-slot compare-${entry.id.toLowerCase()}">${escapeHtml(entry.label)} · ${call} · ${contest} · ${formatNumberSh6(qsos)} QSOs</span>`;
     }).join('');
+    const controls = `
+      <div class="compare-workspace-controls">
+        <button type="button" class="compare-ui-toggle${state.compareSyncEnabled ? ' active' : ''}" data-compare-toggle="sync">Sync scroll ${state.compareSyncEnabled ? 'on' : 'off'}</button>
+        <button type="button" class="compare-ui-toggle${state.compareStickyEnabled ? ' active' : ''}" data-compare-toggle="sticky">Sticky headers ${state.compareStickyEnabled ? 'on' : 'off'}</button>
+        <button type="button" class="compare-ui-toggle${scoreMode === COMPARE_SCORE_MODE_COMPUTED ? ' active' : ''}" data-compare-score-mode="${COMPARE_SCORE_MODE_COMPUTED}">${escapeHtml(resolveCompareScoreModeLabel(COMPARE_SCORE_MODE_COMPUTED))}</button>
+        <button type="button" class="compare-ui-toggle${scoreMode === COMPARE_SCORE_MODE_CLAIMED ? ' active' : ''}" data-compare-score-mode="${COMPARE_SCORE_MODE_CLAIMED}">${escapeHtml(resolveCompareScoreModeLabel(COMPARE_SCORE_MODE_CLAIMED))}</button>
+        <button type="button" class="compare-ui-toggle${scoreMode === COMPARE_SCORE_MODE_LOGGED ? ' active' : ''}" data-compare-score-mode="${COMPARE_SCORE_MODE_LOGGED}">${escapeHtml(resolveCompareScoreModeLabel(COMPARE_SCORE_MODE_LOGGED))}</button>
+      </div>
+    `;
     const insightStrip = renderCompareInsightStrip(slotEntries, safeReportId);
     return `
       <div class="compare-workspace">
@@ -18734,6 +18961,7 @@
           <span class="compare-workspace-report">Report: ${escapeHtml(reportTitle)}</span>
         </div>
         <div class="compare-workspace-slot-row">${slotSummary}</div>
+        ${controls}
         ${insightStrip}
       </div>
     `;
@@ -18741,14 +18969,23 @@
 
   function resolveCompareScore(snapshot) {
     if (!snapshot || typeof snapshot !== 'object') return null;
+    const mode = normalizeCompareScoreMode(state.compareScoreMode);
     const scoring = snapshot?.derived?.scoring || {};
+    if (mode === COMPARE_SCORE_MODE_CLAIMED) {
+      const claimed = parseClaimedScoreNumber(snapshot?.derived?.contestMeta?.claimedScore);
+      return Number.isFinite(claimed) && claimed >= 0 ? claimed : null;
+    }
+    if (mode === COMPARE_SCORE_MODE_LOGGED) {
+      const qsoCount = Number(snapshot?.qsoData?.qsos?.length || 0);
+      const logged = Number(scoring.loggedPointsTotal);
+      if (Number.isFinite(logged) && (logged > 0 || qsoCount === 0)) return Math.round(logged);
+      const effective = Number(snapshot?.derived?.effectivePointsTotal);
+      if (Number.isFinite(effective) && (effective > 0 || qsoCount === 0)) return Math.round(effective);
+      const totalPoints = Number(snapshot?.derived?.totalPoints);
+      return Number.isFinite(totalPoints) && (totalPoints > 0 || qsoCount === 0) ? Math.round(totalPoints) : null;
+    }
     const computed = Number(scoring.computedScore);
-    if (Number.isFinite(computed) && computed > 0) return computed;
-    const claimed = parseClaimedScoreNumber(snapshot?.derived?.contestMeta?.claimedScore);
-    if (Number.isFinite(claimed) && claimed > 0) return claimed;
-    const effective = Number(snapshot?.derived?.effectivePointsTotal);
-    if (Number.isFinite(effective) && effective > 0) return Math.round(effective);
-    return null;
+    return Number.isFinite(computed) && computed >= 0 ? computed : null;
   }
 
   function resolveCompareMultiplier(snapshot) {
@@ -18791,8 +19028,29 @@
   }
 
   function renderCompareInsightStrip(slotEntries, currentReportId) {
-    // Keep "Compare workspace" header informational only (no buttons).
-    return '';
+    const slotMetrics = (slotEntries || []).map((entry) => ({
+      id: entry.id,
+      label: entry.label,
+      call: entry.snapshot?.derived?.contestMeta?.stationCallsign || entry.label,
+      score: resolveCompareScore(entry.snapshot),
+      multiplier: resolveCompareMultiplier(entry.snapshot)
+    }));
+    const scoreLabel = resolveCompareScoreModeLabel(state.compareScoreMode);
+    const jumpButtons = `
+      <div class="compare-insight-jumps">
+        <button type="button" class="compare-workspace-jump" data-compare-jump="${escapeAttr(currentReportId === 'main' ? 'summary' : 'main')}">${currentReportId === 'main' ? 'Jump to summary' : 'Jump to main'}</button>
+        <button type="button" class="compare-workspace-jump" data-compare-jump="summary">Scoring summary</button>
+      </div>
+    `;
+    return `
+      <div class="compare-insight-strip">
+        <div class="compare-insight-row">
+          ${buildCompareInsightChip(slotMetrics, 'score', scoreLabel, 'main')}
+          ${buildCompareInsightChip(slotMetrics, 'multiplier', 'Multipliers', 'summary')}
+        </div>
+        ${jumpButtons}
+      </div>
+    `;
   }
 
   function estimateReportRows(reportId, derived) {
@@ -19689,7 +19947,7 @@
     if (report.id === 'continents') return renderContinentsCompareAligned();
     if (report.id === 'zones_cq') return renderZoneCompareAligned('cq');
     if (report.id === 'zones_itu') return renderZoneCompareAligned('itu');
-    if (report.id === 'countries_by_month') return renderCountriesByMonthHeatmapCompareAligned();
+    if (report.id === 'countries_by_month') return renderCountriesByMonthCompareAligned();
     if (report.id === 'countries_by_year') return renderCountriesByYearCompareAligned();
     if (report.id === 'zones_cq_by_month') return renderZoneMonthCompareAligned('cq');
     if (report.id === 'zones_itu_by_month') return renderZoneMonthCompareAligned('itu');
@@ -19735,6 +19993,14 @@
     compareToggleButtons.forEach((btn) => {
       btn.addEventListener('click', (evt) => {
         evt.preventDefault();
+        const nextScoreMode = btn.dataset.compareScoreMode;
+        if (nextScoreMode) {
+          const normalized = normalizeCompareScoreMode(nextScoreMode);
+          if (normalized === state.compareScoreMode) return;
+          state.compareScoreMode = normalized;
+          renderReportWithLoading(reports[state.activeIndex]);
+          return;
+        }
         const toggle = String(btn.dataset.compareToggle || '').trim().toLowerCase();
         if (toggle === 'sync') {
           state.compareSyncEnabled = !state.compareSyncEnabled;
@@ -22264,6 +22530,7 @@
     getSlotById,
     getRenderPerf: () => getRenderPerfSummary(),
     runDupeModeRegressionChecks,
+    runScoringRegressionChecks,
     trackEvent,
     setSpotHunterStatus: (status, payload = {}) => {
       state.spotHunterStatus = status || 'pending';
