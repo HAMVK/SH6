@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coach Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>Coach Runtime Smoke</h1>
+  <p>Checks the extracted coach runtime for CQ API enrichment, competitor-coach orchestration, and CQ-history archive compare loads.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      try {
+        const [mainSource, moduleSource, coachModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/coach/runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/coach/runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/coach/runtime.js')
+        ]);
+
+        add('Main.js imports the coach runtime module', mainSource.includes("const COACH_RUNTIME_MODULE_URL = './modules/coach/runtime.js?v=6.1.21';"));
+        add('Main.js preloads the coach runtime during init', mainSource.includes('const coachRuntimeReady = loadCoachRuntimeModule();') && mainSource.includes('await coachRuntimeReady;'));
+        add(
+          'Main.js delegates coach orchestration helpers to the runtime',
+          mainSource.includes('return getCoachRuntime().triggerCompetitorCoachRefresh(force);')
+            && mainSource.includes('return getCoachRuntime().loadCqApiHistoryArchiveToSlot(request);')
+            && mainSource.includes('return getCoachRuntime().buildCompetitorCoachContext(client);')
+        );
+        add('Coach runtime exports the factory', moduleSource.includes('export function createCoachRuntime'));
+
+        const loadCalls = [];
+        const createClientCalls = [];
+        const renderCalls = [];
+        const dataStatusCalls = [];
+        const events = [];
+        const compareCounts = [];
+        const slotActions = [];
+        const appliedLoads = [];
+
+        window.SH6_API_DEBUG = false;
+        window.SH6CqApi = {
+          createClient(config) {
+            createClientCalls.push(config);
+            return {
+              normalizeContestId(contestText) {
+                return String(contestText || '').trim().toUpperCase();
+              },
+              isSupportedContest(contestId) {
+                return contestId === 'CQWW';
+              },
+              async enrich(req) {
+                return {
+                  ok: true,
+                  source: 'https://azure.s53m.com/cors/cqapi/cqww/score/cw/2025/S55OO',
+                  helperActive: false,
+                  contestId: req.contestId,
+                  callsign: req.callsign,
+                  year: Number(req.year),
+                  mode: req.mode,
+                  matchedCategory: 'SO AB HP',
+                  currentScore: {
+                    callsign: req.callsign,
+                    year: Number(req.year),
+                    score: 10500,
+                    qsos: 420,
+                    multTotal: 25,
+                    category: 'SO AB HP'
+                  },
+                  history: [
+                    {
+                      callsign: req.callsign,
+                      year: Number(req.year),
+                      score: 10500,
+                      qsos: 420,
+                      multTotal: 25,
+                      category: 'SO AB HP'
+                    }
+                  ],
+                  labels: {
+                    catlist: [
+                      { category: 'SO AB HP', label: 'Single Op All Band High Power' }
+                    ]
+                  }
+                };
+              },
+              async score() {
+                return {
+                  ok: true,
+                  source: 'official-score-source',
+                  rows: [
+                    {
+                      callsign: 'S55OO',
+                      year: 2025,
+                      category: 'SO AB HP',
+                      score: 10500,
+                      qsos: 420,
+                      multTotal: 25
+                    },
+                    {
+                      callsign: 'S53M',
+                      year: 2025,
+                      category: 'SO AB HP',
+                      score: 11300,
+                      qsos: 448,
+                      multTotal: 27
+                    }
+                  ]
+                };
+              },
+              async catlist() {
+                return { ok: true, list: [] };
+              }
+            };
+          }
+        };
+        window.SH6CompetitorCoach = {
+          buildModel({ rows, scopeValue, targetCategory }) {
+            return {
+              rows: rows.map((row, idx) => ({
+                ...row,
+                rank: idx + 1,
+                scoreGap: idx === 0 ? 0 : row.score - rows[0].score,
+                qsoGap: idx === 0 ? 0 : row.qsos - rows[0].qsos,
+                multGap: idx === 0 ? 0 : row.multTotal - rows[0].multTotal
+              })),
+              totalRows: rows.length,
+              currentRow: rows[0],
+              closestRivals: [
+                {
+                  ...rows[1],
+                  scoreGap: 800,
+                  qsoGap: 28,
+                  multGap: 2
+                }
+              ],
+              gapDriver: {
+                direction: 'chasing',
+                targetCallsign: 'S53M',
+                scoreGap: 800,
+                qsoGap: 28,
+                multGap: 2,
+                driver: 'qso',
+                driverSharePct: 72,
+                neededQsos: 32,
+                neededMults: 2
+              },
+              insights: [{ label: 'Test insight' }],
+              targetScopeValue: scopeValue,
+              targetCategory
+            };
+          }
+        };
+
+        const createApiEnrichmentState = () => ({
+          status: 'idle',
+          error: null,
+          source: null,
+          helperActive: false,
+          data: null,
+          requestKey: null
+        });
+        const createCompetitorCoachState = (seed = {}) => ({
+          status: 'idle',
+          error: null,
+          source: null,
+          statusMessage: '',
+          requestKey: null,
+          scopeType: seed.scopeType || 'continent',
+          categoryMode: seed.categoryMode || 'same',
+          targetScopeValue: '',
+          targetCategory: '',
+          scopeLabel: '',
+          rows: [],
+          totalRows: 0,
+          sourceRows: 0,
+          currentRow: null,
+          closestRivals: [],
+          gapDriver: null,
+          insights: [],
+          contestId: '',
+          mode: '',
+          year: null,
+          loadedSlotRows: { A: '', B: '', C: '', D: '' },
+          lastLoadedSlot: '',
+          lastLoadedRowKey: ''
+        });
+
+        const compareSlot = {
+          qsoData: null,
+          derived: null,
+          apiEnrichment: createApiEnrichmentState()
+        };
+        const state = {
+          activeReportId: 'competitor_coach',
+          compareCount: 1,
+          cqApiClient: null,
+          cqApiStatus: 'pending',
+          cqApiSource: 'https://azure.s53m.com/cors/cqapi',
+          cqApiError: null,
+          qsoData: {
+            qsos: [
+              {
+                raw: {
+                  CATEGORY_OPERATOR: 'SO',
+                  CATEGORY_ASSISTED: 'NON-ASSISTED',
+                  CATEGORY_POWER: 'HP',
+                  CATEGORY_BAND: 'ALL'
+                }
+              }
+            ]
+          },
+          derived: {
+            contestMeta: {
+              contestId: 'CQWW',
+              stationCallsign: 'S55OO',
+              category: 'SO AB HP',
+              operators: 'S55OO S55X'
+            },
+            timeRange: {
+              minTs: Date.UTC(2025, 10, 16, 0, 0, 0)
+            },
+            operatorsSummary: [{ op: 'S55OO' }, { op: 'S55X' }]
+          },
+          logFile: {
+            path: 'CQWW/cw/2025/S55OO.log'
+          },
+          logVersion: 4,
+          apiEnrichment: createApiEnrichmentState(),
+          competitorCoach: createCompetitorCoachState(),
+          compareSlots: [compareSlot, compareSlot, compareSlot]
+        };
+
+        const runtime = coachModule.createCoachRuntime({
+          getState: () => state,
+          getActiveReportId: () => state.activeReportId,
+          compareSlotIds: ['A', 'B', 'C', 'D'],
+          cqApiProxyBase: 'https://azure.s53m.com/cors/cqapi',
+          cqApiProxyKeys: { CQWW: 'cqww' },
+          cqApiSupportedContests: new Set(['CQWW']),
+          loadCqApiModule: async () => { loadCalls.push('cqapi'); },
+          loadCompetitorCoachModule: async () => { loadCalls.push('coach'); },
+          loadArchiveClientModule: async () => ({
+            async queryRowsByCallsign(call) {
+              return [{ path: `CQWW/cw/2025/${call}.log` }];
+            },
+            pickHistoryMatch(rows) {
+              return rows[0] || null;
+            },
+            async fetchArchiveLogText(path) {
+              return {
+                text: `START-OF-LOG: 3.0\\nCALLSIGN: ${path.split('/').pop().replace(/\\.log$/i, '')}\\nEND-OF-LOG:`,
+                source: 'archive-client',
+                path
+              };
+            }
+          }),
+          createApiEnrichmentState,
+          createCompetitorCoachState,
+          normalizeCall: (value) => String(value || '').trim().toUpperCase(),
+          deriveStationCallsign: () => 'S55OO',
+          inferApiMode: () => 'cw',
+          dedupeValues: (values) => Array.from(new Set((values || []).filter(Boolean))),
+          parseOperatorsList: (value) => String(value || '').split(/\s+/).filter(Boolean),
+          lookupPrefix: (call) => {
+            const key = String(call || '').trim().toUpperCase();
+            if (!key) return null;
+            return {
+              prefix: 'S5',
+              continent: 'EU',
+              cqZone: 15,
+              ituZone: 28
+            };
+          },
+          baseCall: (value) => String(value || '').split('/')[0] || '',
+          normalizeContinent: (value) => String(value || '').trim().toUpperCase(),
+          mapContinentToCqGeo: (value) => value === 'EU' ? 'EUR' : String(value || '').trim().toUpperCase(),
+          renderActiveReport: () => renderCalls.push(state.activeReportId),
+          updateDataStatus: () => dataStatusCalls.push(state.cqApiStatus),
+          trackEvent: (name, payload) => events.push({ name, payload }),
+          setCompareCount: (count) => {
+            state.compareCount = count;
+            compareCounts.push(count);
+          },
+          setSlotAction: (slotId, action) => slotActions.push({ slotId, action }),
+          applyLoadedLogToSlot: async (slotId, text, fileName, size, source, statusEl, archivePath) => {
+            appliedLoads.push({ slotId, text, fileName, size, source, archivePath, statusEl });
+          },
+          getStatusElBySlot: (slotId) => ({ slotId })
+        });
+
+        add('normalizeCoachCategory normalizes API category tokens', runtime.normalizeCoachCategory('so+ab%20hp') === 'SO AB HP');
+        add('normalizeCoachScopeType normalizes CQ aliases', runtime.normalizeCoachScopeType('cq') === 'cq_zone');
+
+        const request = runtime.buildCqApiRequest({
+          derived: state.derived,
+          qsoData: state.qsoData,
+          logFile: state.logFile
+        });
+        add(
+          'buildCqApiRequest resolves contest, mode, callsign, categories, and scope geos',
+          request
+            && request.contestId === 'CQWW'
+            && request.callsign === 'S55OO'
+            && request.mode === 'cw'
+            && Array.isArray(request.categories)
+            && request.categories.includes('SO AB HP')
+            && request.scopeGeos.dxcc === 'S5'
+            && request.scopeGeos.continent === 'EUR',
+          JSON.stringify(request)
+        );
+
+        const clientA = await runtime.ensureCqApiClient();
+        const clientB = await runtime.ensureCqApiClient();
+        add(
+          'ensureCqApiClient caches the created client',
+          clientA === clientB && loadCalls.filter((entry) => entry === 'cqapi').length === 1 && createClientCalls.length === 1,
+          JSON.stringify({ loadCalls, createClientCalls: createClientCalls.length })
+        );
+
+        await runtime.triggerCqApiEnrichmentForSlot(state, 'A');
+        add(
+          'triggerCqApiEnrichmentForSlot stores ready enrichment and CQ API status',
+          state.apiEnrichment.status === 'ready'
+            && state.apiEnrichment.data?.currentScore?.score === 10500
+            && state.cqApiStatus === 'ok'
+            && renderCalls.length >= 2
+            && dataStatusCalls.includes('loading')
+            && dataStatusCalls.includes('ok'),
+          JSON.stringify({
+            apiStatus: state.apiEnrichment.status,
+            cqApiStatus: state.cqApiStatus,
+            renderCalls,
+            dataStatusCalls
+          })
+        );
+
+        const context = runtime.buildCompetitorCoachContext(state.cqApiClient);
+        add(
+          'buildCompetitorCoachContext derives supported contest scope and category context',
+          context.ok
+            && context.contestId === 'CQWW'
+            && context.mode === 'cw'
+            && context.callsign === 'S55OO'
+            && context.scopeValues.dxcc === 'S5'
+            && context.scopeValues.continent === 'EU'
+            && context.targetCategory === 'SO AB HP',
+          JSON.stringify(context)
+        );
+
+        add(
+          'buildCoachRowKey produces a stable compare-load key',
+          runtime.buildCoachRowKey({ callsign: 's53m', year: 2025, contestId: 'cqww', mode: 'cw' }) === 'S53M|2025|CQWW|cw'
+        );
+
+        await runtime.triggerCompetitorCoachRefresh(true);
+        add(
+          'triggerCompetitorCoachRefresh stores ready competitor coach state',
+          state.competitorCoach.status === 'ready'
+            && state.competitorCoach.totalRows === 2
+            && state.competitorCoach.currentRow?.callsign === 'S55OO'
+            && state.competitorCoach.closestRivals[0]?.callsign === 'S53M'
+            && events.some((entry) => entry.name === 'competitor_coach_refresh')
+            && loadCalls.includes('coach'),
+          JSON.stringify({
+            coachStatus: state.competitorCoach.status,
+            totalRows: state.competitorCoach.totalRows,
+            current: state.competitorCoach.currentRow?.callsign,
+            rival: state.competitorCoach.closestRivals[0]?.callsign,
+            loadCalls,
+            events
+          })
+        );
+
+        const archiveResult = await runtime.loadCqApiHistoryArchiveToSlot({
+          slotId: 'C',
+          callsign: 'S53M',
+          contestId: 'CQWW',
+          mode: 'cw',
+          year: 2025
+        });
+        add(
+          'loadCqApiHistoryArchiveToSlot expands compare count and applies the archive log',
+          archiveResult.path === 'CQWW/cw/2025/S53M.log'
+            && compareCounts.includes(3)
+            && slotActions.some((entry) => entry.slotId === 'C' && entry.action === 'archive')
+            && appliedLoads.some((entry) => entry.slotId === 'C' && entry.archivePath === 'CQWW/cw/2025/S53M.log'),
+          JSON.stringify({ archiveResult, compareCounts, slotActions, appliedLoads })
+        );
+
+        setResult(checks.every((entry) => entry.ok), {
+          checksTotal: checks.length,
+          checksFailed: checks.filter((entry) => !entry.ok).length,
+          state: {
+            cqApiStatus: state.cqApiStatus,
+            apiEnrichmentStatus: state.apiEnrichment.status,
+            competitorCoachStatus: state.competitorCoach.status,
+            competitorCoachRows: state.competitorCoach.totalRows,
+            compareCount: state.compareCount
+          },
+          loadCalls,
+          createClientCalls: createClientCalls.length,
+          renderCalls,
+          dataStatusCalls,
+          compareCounts,
+          slotActions,
+          appliedLoads,
+          events
+        });
+      } catch (err) {
+        add('Smoke execution completed', false, err && err.message ? err.message : String(err));
+        setResult(false, {
+          error: err && err.stack ? err.stack : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
