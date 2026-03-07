@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spots Diagnostics Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>Spots Diagnostics Runtime Smoke</h1>
+  <p>Checks the extracted spots diagnostics runtime for analysis context generation and the advanced diagnostics tables used by the spots report.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      try {
+        const [mainSource, moduleSource, diagnosticsModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/spots/diagnostics-runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/spots/diagnostics-runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/spots/diagnostics-runtime.js')
+        ]);
+
+        add('Main.js imports the spots diagnostics runtime module', mainSource.includes("const SPOTS_DIAGNOSTICS_RUNTIME_MODULE_URL = './modules/spots/diagnostics-runtime.js?v=6.1.21';"));
+        add('Main.js preloads the spots diagnostics runtime during init', mainSource.includes('const spotsDiagnosticsRuntimeReady = loadSpotsDiagnosticsRuntimeModule();') && mainSource.includes('await spotsDiagnosticsRuntimeReady;'));
+        add(
+          'Main.js delegates diagnostics helpers to the extracted runtime',
+          mainSource.includes("const buildAnalysisContext = () => getSpotsDiagnosticsRuntime().buildAnalysisContext({")
+            && mainSource.includes("const renderUnworkedRateTable = (spots) => getSpotsDiagnosticsRuntime().renderUnworkedRateTable(spots);")
+            && mainSource.includes("const renderTimeToFirstQsoTable = (spots, analysis) => getSpotsDiagnosticsRuntime().renderTimeToFirstQsoTable(spots, analysis);")
+            && mainSource.includes("const renderSpotUpliftTable = (spots, analysis) => getSpotsDiagnosticsRuntime().renderSpotUpliftTable(spots, analysis);")
+            && mainSource.includes("const renderSpottingFunnelTable = (spots, analysis) => getSpotsDiagnosticsRuntime().renderSpottingFunnelTable(spots, analysis);")
+            && mainSource.includes("const renderBandChangeEfficiencyTable = (analysis) => getSpotsDiagnosticsRuntime().renderBandChangeEfficiencyTable(analysis);")
+            && mainSource.includes("const renderSpotterReliabilityTable = (spots) => getSpotsDiagnosticsRuntime().renderSpotterReliabilityTable(spots);")
+            && mainSource.includes("const hasConcurrentBands = (qsos) => getSpotsDiagnosticsRuntime().hasConcurrentBands(qsos);")
+            && mainSource.includes("const renderMissedMultTable = (spots, analysis) => getSpotsDiagnosticsRuntime().renderMissedMultTable(spots, analysis);")
+            && mainSource.includes("const renderOpenCloseTable = (spots) => getSpotsDiagnosticsRuntime().renderOpenCloseTable(spots);")
+            && mainSource.includes("const renderPileupWindowTable = (spots, analysis) => getSpotsDiagnosticsRuntime().renderPileupWindowTable(spots, analysis);")
+            && mainSource.includes("const renderFrequencyAgilityTable = (spots, analysis) => getSpotsDiagnosticsRuntime().renderFrequencyAgilityTable(spots, analysis);"),
+          'Missing one or more diagnostics delegation wrappers'
+        );
+        add('Spots diagnostics runtime exports the factory', moduleSource.includes('export function createSpotsDiagnosticsRuntime'));
+
+        const runtime = diagnosticsModule.createSpotsDiagnosticsRuntime({
+          normalizeBandToken: (value) => String(value || '').trim().toUpperCase(),
+          normalizeCall: (value) => String(value || '').trim().toUpperCase(),
+          lookupPrefix: (call) => ({
+            JA1AAA: { country: 'Japan' },
+            JA1BBB: { country: 'Japan' },
+            DL1AAA: { country: 'Germany' }
+          }[String(call || '').trim().toUpperCase()] || null),
+          bandOrderIndex: (band) => ({ '20M': 1, '40M': 2 }[String(band || '').trim().toUpperCase()] ?? 99),
+          formatBandLabel: (band) => String(band || '').trim().toUpperCase(),
+          formatDateSh6: (value) => `TS:${value}`,
+          formatNumberSh6: (value) => String(value),
+          escapeHtml: (value) => String(value == null ? '' : value),
+          bandClass: (band) => `band-${String(band || '').toLowerCase()}`,
+          computeSpotterReliabilityEntries: (spots, minSpots) => {
+            const map = new Map();
+            (spots || []).forEach((spot) => {
+              if (!map.has(spot.spotter)) map.set(spot.spotter, { spotter: spot.spotter, spots: 0, matched: 0 });
+              const entry = map.get(spot.spotter);
+              entry.spots += 1;
+              if (spot.matched) entry.matched += 1;
+            });
+            return Array.from(map.values())
+              .filter((entry) => entry.spots >= minSpots)
+              .map((entry) => ({ ...entry, pct: entry.spots ? (entry.matched / entry.spots) * 100 : 0 }))
+              .sort((a, b) => b.pct - a.pct || b.spots - a.spots);
+          },
+          buildMissedMultEntries: () => ([
+            { ts: Date.UTC(2025, 10, 16, 0, 3, 0), band: '20M', dx: 'JA1AAA', country: 'Japan' }
+          ])
+        });
+
+        const qsos = [
+          { ts: Date.UTC(2025, 10, 16, 0, 5, 0), band: '20M', freq: 14.01, call: 'JA1AAA', country: 'Japan' },
+          { ts: Date.UTC(2025, 10, 16, 0, 12, 0), band: '20M', freq: 14.012, call: 'DL1AAA', country: 'Germany' },
+          { ts: Date.UTC(2025, 10, 16, 0, 20, 0), band: '40M', freq: 7.01, call: 'K1AAA', country: 'United States' },
+          { ts: Date.UTC(2025, 10, 16, 0, 45, 0), band: '20M', freq: 14.02, call: 'JA1BBB', country: 'Japan' }
+        ];
+        const filteredAnalysis = runtime.buildAnalysisContext({
+          qsos,
+          bandFilter: ['20M']
+        });
+        const allBandAnalysis = runtime.buildAnalysisContext({
+          qsos,
+          bandFilter: []
+        });
+
+        add(
+          'buildAnalysisContext filters QSOs by band and tracks first-work metadata from the full log',
+          filteredAnalysis.filteredSorted.length === 3
+            && filteredAnalysis.qsoTimesByBand.get('20M').length === 3
+            && filteredAnalysis.firstCallTime.get('K1AAA') === Date.UTC(2025, 10, 16, 0, 20, 0)
+            && filteredAnalysis.firstCountryTime.get('Germany') === Date.UTC(2025, 10, 16, 0, 12, 0),
+          JSON.stringify({
+            filteredCount: filteredAnalysis.filteredSorted.length,
+            qsoTimes20: filteredAnalysis.qsoTimesByBand.get('20M'),
+            firstCallK1AAA: filteredAnalysis.firstCallTime.get('K1AAA'),
+            firstCountryGermany: filteredAnalysis.firstCountryTime.get('Germany')
+          })
+        );
+
+        const ofUsSpots = [
+          { ts: Date.UTC(2025, 10, 16, 0, 0, 0), band: '20M', matched: false, spotter: 'W3LPL' },
+          { ts: Date.UTC(2025, 10, 16, 0, 2, 0), band: '20M', matched: true, spotter: 'W3LPL' },
+          { ts: Date.UTC(2025, 10, 16, 0, 4, 0), band: '20M', matched: false, spotter: 'W3LPL' },
+          { ts: Date.UTC(2025, 10, 16, 0, 40, 0), band: '20M', matched: true, spotter: 'K1TTT' },
+          { ts: Date.UTC(2025, 10, 16, 0, 45, 0), band: '20M', matched: true, spotter: 'K1TTT' },
+          { ts: Date.UTC(2025, 10, 16, 0, 50, 0), band: '20M', matched: true, spotter: 'K1TTT' }
+        ];
+
+        const unworkedHtml = runtime.renderUnworkedRateTable(ofUsSpots);
+        add(
+          'renderUnworkedRateTable reports unanswered band/hour buckets',
+          unworkedHtml.includes('20M')
+            && unworkedHtml.includes('6')
+            && unworkedHtml.includes('2')
+            && unworkedHtml.includes('33.3%'),
+          unworkedHtml
+        );
+
+        const timeToFirstHtml = runtime.renderTimeToFirstQsoTable(ofUsSpots, filteredAnalysis);
+        add(
+          'renderTimeToFirstQsoTable groups spot clusters and computes average/median time-to-QSO',
+          timeToFirstHtml.includes('Spot clusters')
+            && timeToFirstHtml.includes('2')
+            && timeToFirstHtml.includes('5.0'),
+          timeToFirstHtml
+        );
+
+        const upliftHtml = runtime.renderSpotUpliftTable(ofUsSpots, filteredAnalysis);
+        add(
+          'renderSpotUpliftTable compares rate before and after spots',
+          upliftHtml.includes('Avg 10m before')
+            && upliftHtml.includes('20M')
+            && upliftHtml.includes('0.17')
+            && upliftHtml.includes('1.00')
+            && upliftHtml.includes('0.83'),
+          upliftHtml
+        );
+
+        const byUsSpots = [
+          { ts: Date.UTC(2025, 10, 16, 0, 1, 0), band: '20M', dxCall: 'JA1AAA', matched: true, matchedDx: true },
+          { ts: Date.UTC(2025, 10, 16, 0, 2, 0), band: '20M', dxCall: 'JA1BBB', matched: true, matchedDx: true },
+          { ts: Date.UTC(2025, 10, 16, 0, 3, 0), band: '20M', dxCall: 'DL1AAA', matched: false, matchedDx: false }
+        ];
+        const funnelHtml = runtime.renderSpottingFunnelTable(byUsSpots, filteredAnalysis);
+        add(
+          'renderSpottingFunnelTable renders the DX conversion funnel stages',
+          funnelHtml.includes('Worked DX (call)')
+            && funnelHtml.includes('New DX call')
+            && funnelHtml.includes('66.7%'),
+          funnelHtml
+        );
+
+        const bandChangeHtml = runtime.renderBandChangeEfficiencyTable(allBandAnalysis);
+        add(
+          'renderBandChangeEfficiencyTable evaluates switches between bands',
+          bandChangeHtml.includes('Switches into band')
+            && bandChangeHtml.includes('40M')
+            && bandChangeHtml.includes('20M'),
+          bandChangeHtml
+        );
+
+        const reliabilityHtml = runtime.renderSpotterReliabilityTable(ofUsSpots);
+        add(
+          'renderSpotterReliabilityTable uses the injected reliability computation',
+          reliabilityHtml.includes('Spotter')
+            && reliabilityHtml.includes('K1TTT')
+            && reliabilityHtml.includes('100.0%'),
+          reliabilityHtml
+        );
+
+        add(
+          'hasConcurrentBands detects mixed-band activity inside the same 10-minute bucket',
+          runtime.hasConcurrentBands([
+            { ts: 1, band: '20M' },
+            { ts: 2 * 60000, band: '40M' }
+          ]) === true
+            && runtime.hasConcurrentBands([
+              { ts: 1, band: '20M' },
+              { ts: 11 * 60000, band: '40M' }
+            ]) === false
+        );
+
+        const missedHtml = runtime.renderMissedMultTable(byUsSpots, filteredAnalysis);
+        add(
+          'renderMissedMultTable renders the injected missed-mult candidates',
+          missedHtml.includes('Missed mult candidates: 1')
+            && missedHtml.includes('JA1AAA')
+            && missedHtml.includes('Japan'),
+          missedHtml
+        );
+
+        const openCloseHtml = runtime.renderOpenCloseTable([
+          { ts: Date.UTC(2025, 10, 16, 0, 0, 0), band: '20M' },
+          { ts: Date.UTC(2025, 10, 16, 1, 0, 0), band: '20M' },
+          { ts: Date.UTC(2025, 10, 16, 0, 20, 0), band: '40M' }
+        ]);
+        add(
+          'renderOpenCloseTable summarizes first and last spots per day/band',
+          openCloseHtml.includes('2025-11-16')
+            && openCloseHtml.includes('01:00')
+            && openCloseHtml.includes('1.0'),
+          openCloseHtml
+        );
+
+        const pileupHtml = runtime.renderPileupWindowTable([
+          { ts: Date.UTC(2025, 10, 16, 0, 0, 0), band: '20M' },
+          { ts: Date.UTC(2025, 10, 16, 0, 1, 0), band: '20M' },
+          { ts: Date.UTC(2025, 10, 16, 0, 2, 0), band: '20M' },
+          { ts: Date.UTC(2025, 10, 16, 0, 3, 0), band: '20M' },
+          { ts: Date.UTC(2025, 10, 16, 0, 4, 0), band: '20M' }
+        ], filteredAnalysis);
+        add(
+          'renderPileupWindowTable highlights 10-minute windows with at least 5 spots',
+          pileupHtml.includes('Spots</th><th>QSOs')
+            && pileupHtml.includes('5')
+            && pileupHtml.includes('1'),
+          pileupHtml
+        );
+
+        const agilityAnalysis = {
+          qsoRecordsByBand: new Map([
+            ['20M', [
+              { ts: Date.UTC(2025, 10, 16, 0, 0, 0), freq: 14.01 },
+              { ts: Date.UTC(2025, 10, 16, 0, 8, 0), freq: 14.012 },
+              { ts: Date.UTC(2025, 10, 16, 0, 20, 0), freq: 14.02 },
+              { ts: Date.UTC(2025, 10, 16, 0, 28, 0), freq: 14.0205 }
+            ]]
+          ]),
+          qsoTimesByBand: new Map([
+            ['20M', [
+              Date.UTC(2025, 10, 16, 0, 0, 0),
+              Date.UTC(2025, 10, 16, 0, 8, 0),
+              Date.UTC(2025, 10, 16, 0, 20, 0),
+              Date.UTC(2025, 10, 16, 0, 28, 0)
+            ]]
+          ])
+        };
+        const agilityHtml = runtime.renderFrequencyAgilityTable([
+          { ts: Date.UTC(2025, 10, 16, 0, 4, 0), band: '20M' },
+          { ts: Date.UTC(2025, 10, 16, 0, 24, 0), band: '20M' }
+        ], agilityAnalysis);
+        add(
+          'renderFrequencyAgilityTable compares moved vs stayed samples',
+          agilityHtml.includes('Moved ≥ 1 kHz')
+            && agilityHtml.includes('Stayed < 1 kHz')
+            && agilityHtml.includes('2.0')
+            && agilityHtml.includes('0.5'),
+          agilityHtml
+        );
+
+        const ok = checks.every((entry) => entry.ok);
+        setResult(ok, { checks });
+      } catch (err) {
+        add('Smoke test execution completed', false, err && err.message ? err.message : String(err));
+        setResult(false, {
+          error: err && err.stack ? err.stack : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
