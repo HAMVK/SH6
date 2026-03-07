@@ -198,6 +198,7 @@
   const COACH_RUNTIME_MODULE_URL = './modules/coach/runtime.js?v=6.1.21';
   const CANVAS_ZOOM_RUNTIME_MODULE_URL = './modules/ui/canvas-zoom-runtime.js?v=6.1.21';
   const RBN_SIGNAL_EXPORT_RUNTIME_MODULE_URL = './modules/spots/signal-export-runtime.js?v=6.1.21';
+  const SPOTS_COMPARE_RUNTIME_MODULE_URL = './modules/spots/compare-runtime.js?v=6.1.21';
   const SPOTS_DATA_RUNTIME_MODULE_URL = './modules/spots/data-runtime.js?v=6.1.21';
   const SPOTS_ACTIONS_RUNTIME_MODULE_URL = './modules/spots/actions-runtime.js?v=6.1.21';
   const RBN_COMPARE_CHART_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-chart-runtime.js?v=6.1.21';
@@ -1302,6 +1303,8 @@
   let canvasZoomRuntime = null;
   let rbnSignalExportRuntimeModulePromise = null;
   let rbnSignalExportRuntime = null;
+  let spotsCompareRuntimeModulePromise = null;
+  let spotsCompareRuntime = null;
   let spotsDataRuntimeModulePromise = null;
   let spotsDataRuntime = null;
   let spotsActionsRuntimeModulePromise = null;
@@ -1908,6 +1911,43 @@
       throw new Error('rbn signal export runtime not loaded');
     }
     return rbnSignalExportRuntime;
+  }
+
+  function loadSpotsCompareRuntimeModule() {
+    if (!spotsCompareRuntimeModulePromise) {
+      spotsCompareRuntimeModulePromise = import(SPOTS_COMPARE_RUNTIME_MODULE_URL)
+        .then((mod) => {
+          if (!mod || typeof mod.createSpotsCompareRuntime !== 'function') {
+            throw new Error('spots compare runtime module unavailable');
+          }
+          spotsCompareRuntime = mod.createSpotsCompareRuntime({
+            getState: () => state,
+            getActiveCompareSnapshots,
+            getSpotStateBySource,
+            getAvailableBands,
+            sortBands,
+            formatBandLabel,
+            bandClass,
+            escapeAttr,
+            escapeHtml,
+            renderSpotsCompareSlot: (entry, source) => withSlotState(
+              entry.snapshot,
+              () => renderSpots({ source, spotsState: getSpotStateBySource(entry.snapshot, source), hideControls: true }),
+              { slotId: entry.id }
+            ),
+            renderComparePanels
+          });
+          return spotsCompareRuntime;
+        });
+    }
+    return spotsCompareRuntimeModulePromise;
+  }
+
+  function getSpotsCompareRuntime() {
+    if (!spotsCompareRuntime) {
+      throw new Error('spots compare runtime not loaded');
+    }
+    return spotsCompareRuntime;
   }
 
   function loadSpotsDataRuntimeModule() {
@@ -11957,44 +11997,11 @@
   }
 
   function renderSpotsSharedControls(source) {
-    const sourceAttr = escapeAttr(source);
-    const spotState = getSpotStateBySource(state, source);
-    const windowMinutes = Number(spotState.windowMinutes) || 15;
-    const bandFilterSet = new Set(spotState.bandFilter || []);
-    const baseBands = getAvailableBands(true).filter((b) => b && String(b).toLowerCase() !== 'unknown');
-    const bandOptions = sortBands(baseBands);
-    return `
-      <div class="spots-controls">
-        <label>Match window (minutes): <span class="spots-window-value" data-shared="1" data-source="${sourceAttr}">${windowMinutes}</span></label>
-        <input class="spots-window" data-shared="1" data-source="${sourceAttr}" type="range" min="1" max="60" step="1" value="${windowMinutes}">
-      </div>
-      <div class="spots-filters">
-        <label class="spots-filter">
-          <input type="checkbox" class="spots-band-filter" data-shared="1" data-source="${sourceAttr}" data-band="ALL" ${bandFilterSet.size ? '' : 'checked'}>
-          <span>All bands</span>
-        </label>
-        ${bandOptions.map((band) => {
-          const label = band === 'unknown' ? 'Unknown' : formatBandLabel(band);
-          const checked = bandFilterSet.has(band) ? 'checked' : '';
-          const cls = band === 'unknown' ? '' : bandClass(band);
-          return `
-            <label class="spots-filter ${cls}">
-              <input type="checkbox" class="spots-band-filter" data-shared="1" data-source="${sourceAttr}" data-band="${escapeAttr(band)}" ${checked}>
-              <span>${escapeHtml(label)}</span>
-            </label>
-          `;
-        }).join('')}
-      </div>
-    `;
+    return getSpotsCompareRuntime().renderSpotsSharedControls(source);
   }
 
   function renderSpotsCompare(source) {
-    const slots = getActiveCompareSnapshots();
-    const htmlBlocks = slots.map((entry) => (
-      entry.ready ? withSlotState(entry.snapshot, () => renderSpots({ source, spotsState: getSpotStateBySource(entry.snapshot, source), hideControls: true }), { slotId: entry.id }) : `<p>No ${entry.label} loaded.</p>`
-    ));
-    const controls = renderSpotsSharedControls(source);
-    return `${controls}${renderComparePanels(slots, htmlBlocks, source === 'rbn' ? 'rbn_spots' : 'spots')}`;
+    return getSpotsCompareRuntime().renderSpotsCompare(source);
   }
 
   function renderSpotHunter() {
@@ -15538,79 +15545,8 @@
     return getCompareWorkspaceRenderer().renderComparePanels(slotEntries, htmlBlocks, reportId, options, { state, reports });
   }
 
-  function normalizeHeadingLabel(text) {
-    return String(text || '')
-      .trim()
-      .replace(/\s+/g, ' ')
-      .toLowerCase();
-  }
-
-  function buildSpotsAlignBlocks(panelEl, stopHeading = 'all spots of you') {
-    if (!(panelEl instanceof HTMLElement)) return [];
-    const children = Array.from(panelEl.children);
-    if (!children.length) return [];
-    const isHeadingNode = (el) => {
-      if (!(el instanceof HTMLElement)) return false;
-      if (!el.classList.contains('export-actions') || !el.classList.contains('export-note')) return false;
-      const first = el.firstElementChild;
-      return Boolean(first && first.tagName === 'B');
-    };
-    const headingIndices = [];
-    let stopIndex = children.length;
-    const stopKey = normalizeHeadingLabel(stopHeading);
-    for (let i = 0; i < children.length; i += 1) {
-      const el = children[i];
-      if (!isHeadingNode(el)) continue;
-      const heading = normalizeHeadingLabel(el.firstElementChild?.textContent || '');
-      if (stopKey && heading === stopKey) {
-        stopIndex = i;
-        break;
-      }
-      headingIndices.push(i);
-    }
-    if (!headingIndices.length) return [];
-    const blocks = [];
-    for (let i = 0; i < headingIndices.length; i += 1) {
-      const start = headingIndices[i];
-      const nextStart = headingIndices[i + 1] != null ? headingIndices[i + 1] : stopIndex;
-      if (start >= nextStart) continue;
-      const wrapper = document.createElement('div');
-      wrapper.className = 'spots-align-block';
-      wrapper.dataset.alignIdx = String(i);
-      const firstNode = children[start];
-      if (!firstNode || firstNode.parentElement !== panelEl) continue;
-      panelEl.insertBefore(wrapper, firstNode);
-      for (let k = start; k < nextStart; k += 1) {
-        const node = children[k];
-        if (node && node.parentElement === panelEl) {
-          wrapper.appendChild(node);
-        }
-      }
-      blocks.push(wrapper);
-    }
-    return blocks;
-  }
-
   function alignSpotsCompareSections(reportId) {
-    const id = String(reportId || '').split('::')[0];
-    if (id !== 'spots' && id !== 'rbn_spots') return;
-    if (!state.compareEnabled) return;
-    if (window.innerWidth < 768) return;
-    const panels = Array.from(document.querySelectorAll('.compare-panel .spots-panel'));
-    if (panels.length < 2) return;
-    const blockSets = panels.map((panel) => buildSpotsAlignBlocks(panel, 'all spots of you'));
-    const maxBlocks = Math.max(0, ...blockSets.map((list) => list.length));
-    for (let i = 0; i < maxBlocks; i += 1) {
-      const group = blockSets.map((list) => list[i]).filter(Boolean);
-      if (group.length < 2) continue;
-      group.forEach((el) => {
-        el.style.minHeight = '';
-      });
-      const target = Math.max(...group.map((el) => el.offsetHeight));
-      group.forEach((el) => {
-        el.style.minHeight = `${target}px`;
-      });
-    }
+    return getSpotsCompareRuntime().alignSpotsCompareSections(reportId);
   }
 
   function bindCompareScrollSync(reportId) {
@@ -17576,6 +17512,7 @@
     const coachRuntimeReady = loadCoachRuntimeModule();
     const canvasZoomRuntimeReady = loadCanvasZoomRuntimeModule();
     const rbnSignalExportRuntimeReady = loadRbnSignalExportRuntimeModule();
+    const spotsCompareRuntimeReady = loadSpotsCompareRuntimeModule();
     const spotsDataRuntimeReady = loadSpotsDataRuntimeModule();
     const spotsActionsRuntimeReady = loadSpotsActionsRuntimeModule();
     const rbnCompareChartRuntimeReady = loadRbnCompareChartRuntimeModule();
@@ -17597,6 +17534,7 @@
     await coachRuntimeReady;
     await canvasZoomRuntimeReady;
     await rbnSignalExportRuntimeReady;
+    await spotsCompareRuntimeReady;
     await spotsDataRuntimeReady;
     await spotsActionsRuntimeReady;
     await rbnCompareChartRuntimeReady;

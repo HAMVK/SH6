@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spots Compare Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>Spots Compare Runtime Smoke</h1>
+  <p>Checks the extracted spots compare runtime for shared controls, compare rendering, and panel section alignment.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      try {
+        const [mainSource, moduleSource, compareModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/spots/compare-runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/spots/compare-runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/spots/compare-runtime.js')
+        ]);
+
+        add('Main.js imports the spots compare runtime module', mainSource.includes("const SPOTS_COMPARE_RUNTIME_MODULE_URL = './modules/spots/compare-runtime.js?v=6.1.21';"));
+        add('Main.js preloads the spots compare runtime during init', mainSource.includes('const spotsCompareRuntimeReady = loadSpotsCompareRuntimeModule();') && mainSource.includes('await spotsCompareRuntimeReady;'));
+        add(
+          'Main.js delegates spots compare helpers to the spots compare runtime',
+          mainSource.includes('return getSpotsCompareRuntime().renderSpotsSharedControls(source);')
+            && mainSource.includes('return getSpotsCompareRuntime().renderSpotsCompare(source);')
+            && mainSource.includes('return getSpotsCompareRuntime().alignSpotsCompareSections(reportId);')
+        );
+        add('Spots compare runtime exports the factory', moduleSource.includes('export function createSpotsCompareRuntime'));
+
+        const comparePanelCalls = [];
+        const slotRenderCalls = [];
+        const state = {
+          compareEnabled: true,
+          spotsState: { windowMinutes: 18, bandFilter: ['20M'] },
+          rbnState: { windowMinutes: 12, bandFilter: [] }
+        };
+
+        const runtime = compareModule.createSpotsCompareRuntime({
+          getState: () => state,
+          getActiveCompareSnapshots: () => ([
+            { id: 'A', label: 'Log A', ready: true, snapshot: { id: 'slotA' } },
+            { id: 'B', label: 'Log B', ready: false, snapshot: { id: 'slotB' } }
+          ]),
+          getSpotStateBySource: (slot, source) => source === 'rbn' ? slot.rbnState || state.rbnState : slot.spotsState || state.spotsState,
+          getAvailableBands: () => ['40M', '20M'],
+          sortBands: (values) => values.slice().sort(),
+          formatBandLabel: (band) => String(band || '').toUpperCase(),
+          bandClass: (band) => `band-${String(band || '').toLowerCase()}`,
+          escapeAttr: (value) => String(value == null ? '' : value),
+          escapeHtml: (value) => String(value == null ? '' : value),
+          renderSpotsCompareSlot: (entry, source) => {
+            slotRenderCalls.push({ id: entry.id, source, snapshotId: entry.snapshot.id });
+            return `<div class="spots-panel" data-slot="${entry.id}"><div class="export-actions export-note"><b>Summary snapshot</b></div><div>${entry.id}-${source}</div><div class="export-actions export-note"><b>All spots of you</b></div></div>`;
+          },
+          renderComparePanels: (slotEntries, htmlBlocks, reportId) => {
+            comparePanelCalls.push({ slotCount: slotEntries.length, htmlCount: htmlBlocks.length, reportId });
+            return `<div class="compare-root">${htmlBlocks.map((html) => `<div class="compare-panel">${html}</div>`).join('')}</div>`;
+          }
+        });
+
+        const controlsHtml = runtime.renderSpotsSharedControls('spots');
+        add(
+          'renderSpotsSharedControls renders shared window and band filter controls',
+          controlsHtml.includes('data-shared="1"')
+            && controlsHtml.includes('data-source="spots"')
+            && controlsHtml.includes('value="18"')
+            && controlsHtml.includes('band-20m')
+            && controlsHtml.includes('checked'),
+          controlsHtml
+        );
+
+        const compareHtml = runtime.renderSpotsCompare('rbn');
+        add(
+          'renderSpotsCompare renders ready slots and preserves placeholders for missing slots',
+          slotRenderCalls.length === 1
+            && slotRenderCalls[0].id === 'A'
+            && slotRenderCalls[0].source === 'rbn'
+            && comparePanelCalls.length === 1
+            && comparePanelCalls[0].reportId === 'rbn_spots'
+            && compareHtml.includes('A-rbn')
+            && compareHtml.includes('No Log B loaded.'),
+          JSON.stringify({ slotRenderCalls, comparePanelCalls, compareHtml })
+        );
+
+        const directPanel = document.createElement('div');
+        directPanel.className = 'spots-panel';
+        directPanel.innerHTML = `
+          <div class="export-actions export-note"><b>Summary snapshot</b></div>
+          <div>Short block</div>
+          <div class="export-actions export-note"><b>Advanced diagnostics</b></div>
+          <div>Tall block</div>
+          <div class="export-actions export-note"><b>All spots of you</b></div>
+          <div>Stop here</div>
+        `;
+        document.body.appendChild(directPanel);
+        const originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+        Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+          configurable: true,
+          get() {
+            const text = (this.textContent || '').trim();
+            if (text.includes('Tall block')) return 140;
+            if (text.includes('Short block')) return 80;
+            return 40;
+          }
+        });
+
+        try {
+          const built = runtime.buildSpotsAlignBlocks(directPanel);
+          add(
+            'buildSpotsAlignBlocks groups heading-led sections before the stop heading',
+            built.length === 2
+              && built[0].className === 'spots-align-block'
+              && built[0].textContent.includes('Short block')
+              && built[1].textContent.includes('Tall block')
+              && !built.some((entry) => entry.textContent.includes('Stop here')),
+            JSON.stringify({ count: built.length, texts: built.map((entry) => entry.textContent.trim()) })
+          );
+
+          const compareRoot = document.createElement('div');
+          compareRoot.innerHTML = `
+            <div class="compare-panel">
+              <div class="spots-panel">
+                <div class="export-actions export-note"><b>Summary snapshot</b></div>
+                <div>Short block</div>
+                <div class="export-actions export-note"><b>Advanced diagnostics</b></div>
+                <div>Tall block</div>
+                <div class="export-actions export-note"><b>All spots of you</b></div>
+                <div>Stop here</div>
+              </div>
+            </div>
+            <div class="compare-panel">
+              <div class="spots-panel">
+                <div class="export-actions export-note"><b>Summary snapshot</b></div>
+                <div>Tall block</div>
+                <div class="export-actions export-note"><b>Advanced diagnostics</b></div>
+                <div>Short block</div>
+                <div class="export-actions export-note"><b>All spots of you</b></div>
+                <div>Stop here</div>
+              </div>
+            </div>
+          `;
+          document.body.appendChild(compareRoot);
+          const originalInnerWidth = window.innerWidth;
+          Object.defineProperty(window, 'innerWidth', {
+            configurable: true,
+            value: 1200
+          });
+          runtime.alignSpotsCompareSections('spots');
+          const alignedBlocks = Array.from(compareRoot.querySelectorAll('.spots-align-block'));
+          add(
+            'alignSpotsCompareSections equalizes block min-heights across compare panels',
+            alignedBlocks.length === 4
+              && alignedBlocks[0].style.minHeight === '140px'
+              && alignedBlocks[1].style.minHeight === '140px'
+              && alignedBlocks[2].style.minHeight === '140px'
+              && alignedBlocks[3].style.minHeight === '140px',
+            JSON.stringify(alignedBlocks.map((entry) => entry.style.minHeight))
+          );
+          Object.defineProperty(window, 'innerWidth', {
+            configurable: true,
+            value: originalInnerWidth
+          });
+          compareRoot.remove();
+        } finally {
+          directPanel.remove();
+          if (originalOffsetHeight) {
+            Object.defineProperty(HTMLElement.prototype, 'offsetHeight', originalOffsetHeight);
+          } else {
+            delete HTMLElement.prototype.offsetHeight;
+          }
+        }
+
+        const ok = checks.every((entry) => entry.ok);
+        setResult(ok, {
+          checks,
+          slotRenderCalls,
+          comparePanelCalls
+        });
+      } catch (err) {
+        add('Smoke test execution completed', false, err && err.message ? err.message : String(err));
+        setResult(false, {
+          error: err && err.stack ? err.stack : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
