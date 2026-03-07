@@ -202,6 +202,7 @@
   const SPOTS_DRILLDOWN_RUNTIME_MODULE_URL = './modules/spots/drilldown-runtime.js?v=6.1.21';
   const SPOTS_COACH_SUMMARY_RUNTIME_MODULE_URL = './modules/spots/coach-summary-runtime.js?v=6.1.21';
   const SPOTS_DIAGNOSTICS_RUNTIME_MODULE_URL = './modules/spots/diagnostics-runtime.js?v=6.1.21';
+  const SPOTS_CHARTS_RUNTIME_MODULE_URL = './modules/spots/charts-runtime.js?v=6.1.21';
   const SPOTS_DATA_RUNTIME_MODULE_URL = './modules/spots/data-runtime.js?v=6.1.21';
   const SPOTS_ACTIONS_RUNTIME_MODULE_URL = './modules/spots/actions-runtime.js?v=6.1.21';
   const RBN_COMPARE_CHART_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-chart-runtime.js?v=6.1.21';
@@ -1314,6 +1315,8 @@
   let spotsCoachSummaryRuntime = null;
   let spotsDiagnosticsRuntimeModulePromise = null;
   let spotsDiagnosticsRuntime = null;
+  let spotsChartsRuntimeModulePromise = null;
+  let spotsChartsRuntime = null;
   let spotsDataRuntimeModulePromise = null;
   let spotsDataRuntime = null;
   let spotsActionsRuntimeModulePromise = null;
@@ -2053,6 +2056,36 @@
       throw new Error('spots diagnostics runtime not loaded');
     }
     return spotsDiagnosticsRuntime;
+  }
+
+  function loadSpotsChartsRuntimeModule() {
+    if (!spotsChartsRuntimeModulePromise) {
+      spotsChartsRuntimeModulePromise = import(SPOTS_CHARTS_RUNTIME_MODULE_URL)
+        .then((mod) => {
+          if (!mod || typeof mod.createSpotsChartsRuntime !== 'function') {
+            throw new Error('spots charts runtime module unavailable');
+          }
+          spotsChartsRuntime = mod.createSpotsChartsRuntime({
+            normalizeBandToken,
+            escapeHtml,
+            escapeAttr,
+            formatBandLabel,
+            formatDateSh6,
+            formatNumberSh6,
+            bandClass,
+            sortBands
+          });
+          return spotsChartsRuntime;
+        });
+    }
+    return spotsChartsRuntimeModulePromise;
+  }
+
+  function getSpotsChartsRuntime() {
+    if (!spotsChartsRuntime) {
+      throw new Error('spots charts runtime not loaded');
+    }
+    return spotsChartsRuntime;
   }
 
   function loadSpotsDataRuntimeModule() {
@@ -10841,139 +10874,25 @@
     const renderOpenCloseTable = (spots) => getSpotsDiagnosticsRuntime().renderOpenCloseTable(spots);
     const renderPileupWindowTable = (spots, analysis) => getSpotsDiagnosticsRuntime().renderPileupWindowTable(spots, analysis);
     const renderFrequencyAgilityTable = (spots, analysis) => getSpotsDiagnosticsRuntime().renderFrequencyAgilityTable(spots, analysis);
-    const buildTenMinuteSeries = (derived, bandSet) => {
-      if (!bandSet || !bandSet.size) {
-        return (derived?.tenMinuteSeries || []).map((p) => ({ ts: p.bucket * 600000, qsos: p.qsos }));
-      }
-      const map = new Map();
-      (state.qsoData?.qsos || []).forEach((q) => {
-        if (!Number.isFinite(q.ts)) return;
-        const band = normalizeBandToken(q.band || '') || 'unknown';
-        if (!bandSet.has(band)) return;
-        const bucket = Math.floor(q.ts / (60000 * 10));
-        map.set(bucket, (map.get(bucket) || 0) + 1);
-      });
-      return Array.from(map.entries()).sort((a, b) => a[0] - b[0]).map(([bucket, qsos]) => ({ ts: bucket * 600000, qsos }));
-    };
-    const renderSpotRateTimeline = (derived, spots) => {
-      const filterSet = new Set(spotsState.bandFilter || []);
-      const series = buildTenMinuteSeries(derived, filterSet);
-      if (!series.length) return '<p>No QSO rate data.</p>';
-      const min = Math.min(...series.map((s) => s.ts));
-      const max = Math.max(...series.map((s) => s.ts));
-      const maxRate = Math.max(...series.map((s) => s.qsos), 1);
-      const width = 900;
-      const height = 320;
-      const margin = { left: 70, right: 20, top: 20, bottom: 55 };
-      const plotW = width - margin.left - margin.right;
-      const plotH = height - margin.top - margin.bottom;
-      const xScale = (ts) => margin.left + ((ts - min) / (max - min)) * plotW;
-      const yScale = (v) => margin.top + (1 - (v / maxRate)) * plotH;
-      let prevTs = null;
-      const line = series.map((s, idx) => {
-        const x = xScale(s.ts);
-        const y = yScale(s.qsos);
-        const jump = prevTs != null && (s.ts - prevTs) > 600000;
-        const cmd = idx === 0 || jump ? 'M' : 'L';
-        prevTs = s.ts;
-        return `${cmd} ${x} ${y}`;
-      }).join(' ');
-      const xTicks = 5;
-      const xGrid = [];
-      const xLabels = [];
-      for (let i = 0; i < xTicks; i += 1) {
-        const t = min + ((max - min) * i) / (xTicks - 1);
-        const x = xScale(t);
-        xGrid.push(`<line class="freq-grid" x1="${x}" y1="${margin.top}" x2="${x}" y2="${height - margin.bottom}"></line>`);
-        const label = formatDateSh6(t);
-        xLabels.push(`<text class="freq-axis-text" x="${x}" y="${height - margin.bottom + 18}" transform="rotate(-35 ${x} ${height - margin.bottom + 18})" text-anchor="end">${escapeHtml(label)}</text>`);
-      }
-      const yTicks = 5;
-      const yGrid = [];
-      const yLabels = [];
-      for (let i = 0; i < yTicks; i += 1) {
-        const v = (maxRate * i) / (yTicks - 1);
-        const y = yScale(v);
-        yGrid.push(`<line class="freq-grid" x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}"></line>`);
-        yLabels.push(`<text class="freq-axis-text" x="${margin.left - 8}" y="${y + 4}" text-anchor="end">${escapeHtml(v.toFixed(0))}</text>`);
-      }
-      const spotList = spots || [];
-      const maxMarkers = 500;
-      let spotLines = '';
-      let spotAgg = '';
-      if (spotList.length <= maxMarkers) {
-        spotLines = spotList.map((s) => {
-          const x = xScale(s.ts);
-          return `<line class="spot-line" x1="${x}" y1="${margin.top}" x2="${x}" y2="${height - margin.bottom}"></line>`;
-        }).join('');
-      } else {
-        const bucketCounts = new Map();
-        spotList.forEach((s) => {
-          if (!Number.isFinite(s.ts)) return;
-          const bucket = Math.floor(s.ts / 600000) * 600000;
-          bucketCounts.set(bucket, (bucketCounts.get(bucket) || 0) + 1);
-        });
-        const maxBucket = Math.max(...Array.from(bucketCounts.values()), 1);
-        const aggHeight = plotH * 0.25;
-        spotAgg = Array.from(bucketCounts.entries()).map(([bucket, count]) => {
-          const x = xScale(bucket);
-          const h = (count / maxBucket) * aggHeight;
-          return `<rect class="spot-agg" x="${x - 1}" y="${height - margin.bottom - h}" width="2" height="${h}"></rect>`;
-        }).join('');
-      }
-      return `
-        <div class="freq-scatter-wrap">
-          <svg class="freq-scatter" viewBox="0 0 ${width} ${height}" role="img" aria-label="10 minute rate timeline">
-            <rect class="freq-plot-bg" x="${margin.left}" y="${margin.top}" width="${plotW}" height="${plotH}"></rect>
-            ${xGrid.join('')}
-            ${yGrid.join('')}
-            ${spotLines}
-            ${spotAgg}
-            <path class="spot-rate-line" d="${line}"></path>
-            <line class="freq-axis" x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}"></line>
-            <line class="freq-axis" x1="${margin.left}" y1="${height - margin.bottom}" x2="${width - margin.right}" y2="${height - margin.bottom}"></line>
-            ${xLabels.join('')}
-            ${yLabels.join('')}
-            <text class="freq-axis-title" x="${width / 2}" y="${height - 8}" text-anchor="middle">Time (UTC)</text>
-            <text class="freq-axis-title" x="14" y="${height / 2}" transform="rotate(-90 14 ${height / 2})" text-anchor="middle">10 min QSO rate</text>
-          </svg>
-        </div>
-      `;
-    };
-    const renderHeatmap = (heatmapData) => {
-      if (!heatmapData || !heatmapData.length) return '<p>No heatmap data.</p>';
-      const visibleHours = (heatmapHours && heatmapHours.length) ? heatmapHours : Array.from({ length: 24 }, (_, h) => h);
-      const bands = sortBands(heatmapData.map((h) => h.band));
-      const maxVal = Math.max(
-        1,
-        ...heatmapData.flatMap((entry) => visibleHours.map((hour) => Number(entry?.hours?.[hour] || 0)))
-      );
-      const header = visibleHours.map((h) => `<th>${String(h).padStart(2, '0')}</th>`).join('');
-      const rows = bands.map((band, idx) => {
-        const entry = heatmapData.find((h) => h.band === band);
-        const hours = entry ? entry.hours : [];
-        const cells = visibleHours.map((hour) => {
-          const count = Number(hours[hour] || 0);
-          const active = drillBand === band && Number(drillHour) === hour;
-          const intensity = count ? Math.min(0.85, 0.15 + (count / maxVal) * 0.7) : 0;
-          const bg = count ? `background: rgba(30, 91, 214, ${intensity}); color: #fff;` : '';
-          if (!count) return `<td style="${bg}"></td>`;
-          return `
-            <td style="${bg}">
-              <button type="button" class="spots-heat-cell${active ? ' active' : ''}" data-slot="${slotAttr}" data-source="${sourceAttr}" data-band="${escapeAttr(band)}" data-hour="${hour}" title="Show ${formatNumberSh6(count)} spots on ${escapeAttr(formatBandLabel(band || ''))} at ${String(hour).padStart(2, '0')}Z">${formatNumberSh6(count)}</button>
-            </td>
-          `;
-        }).join('');
-        const cls = idx % 2 === 0 ? 'td1' : 'td0';
-        return `<tr class="${cls}"><td class="${bandClass(band)}"><b>${escapeHtml(formatBandLabel(band))}</b></td>${cells}</tr>`;
-      }).join('');
-      return `
-        <table class="mtc" style="margin-top:5px;margin-bottom:10px;text-align:right;">
-          <tr class="thc"><th>Band</th>${header}</tr>
-          ${rows}
-        </table>
-      `;
-    };
+    const buildTenMinuteSeries = (derived, bandSet) => getSpotsChartsRuntime().buildTenMinuteSeries({
+      derived,
+      qsos: state.qsoData?.qsos || [],
+      bandFilter: Array.from(bandSet || [])
+    });
+    const renderSpotRateTimeline = (derived, spots) => getSpotsChartsRuntime().renderSpotRateTimeline({
+      derived,
+      qsos: state.qsoData?.qsos || [],
+      bandFilter: spotsState.bandFilter || [],
+      spots
+    });
+    const renderHeatmap = (heatmapData) => getSpotsChartsRuntime().renderHeatmap({
+      heatmapData,
+      heatmapHours,
+      drillBand,
+      drillHour,
+      slotAttr,
+      sourceAttr
+    });
 
     const renderSpotsCoachCards = (statsData, analysis) => getSpotsCoachSummaryRuntime().renderSpotsCoachCards({
       statsData,
@@ -16857,6 +16776,7 @@
     const spotsDrilldownRuntimeReady = loadSpotsDrilldownRuntimeModule();
     const spotsCoachSummaryRuntimeReady = loadSpotsCoachSummaryRuntimeModule();
     const spotsDiagnosticsRuntimeReady = loadSpotsDiagnosticsRuntimeModule();
+    const spotsChartsRuntimeReady = loadSpotsChartsRuntimeModule();
     const spotsDataRuntimeReady = loadSpotsDataRuntimeModule();
     const spotsActionsRuntimeReady = loadSpotsActionsRuntimeModule();
     const rbnCompareChartRuntimeReady = loadRbnCompareChartRuntimeModule();
@@ -16882,6 +16802,7 @@
     await spotsDrilldownRuntimeReady;
     await spotsCoachSummaryRuntimeReady;
     await spotsDiagnosticsRuntimeReady;
+    await spotsChartsRuntimeReady;
     await spotsDataRuntimeReady;
     await spotsActionsRuntimeReady;
     await rbnCompareChartRuntimeReady;

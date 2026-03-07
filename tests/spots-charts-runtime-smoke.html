@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spots Charts Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>Spots Charts Runtime Smoke</h1>
+  <p>Checks the extracted spots chart runtime for ten-minute series generation, the spot-to-rate timeline SVG, and the clickable band/hour heatmap.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      try {
+        const [mainSource, moduleSource, chartsModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/spots/charts-runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/spots/charts-runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/spots/charts-runtime.js')
+        ]);
+
+        add('Main.js imports the spots charts runtime module', mainSource.includes("const SPOTS_CHARTS_RUNTIME_MODULE_URL = './modules/spots/charts-runtime.js?v=6.1.21';"));
+        add('Main.js preloads the spots charts runtime during init', mainSource.includes('const spotsChartsRuntimeReady = loadSpotsChartsRuntimeModule();') && mainSource.includes('await spotsChartsRuntimeReady;'));
+        add(
+          'Main.js delegates chart helpers to the extracted runtime',
+          mainSource.includes("const buildTenMinuteSeries = (derived, bandSet) => getSpotsChartsRuntime().buildTenMinuteSeries({")
+            && mainSource.includes("const renderSpotRateTimeline = (derived, spots) => getSpotsChartsRuntime().renderSpotRateTimeline({")
+            && mainSource.includes("const renderHeatmap = (heatmapData) => getSpotsChartsRuntime().renderHeatmap({"),
+          'Missing one or more charts delegation wrappers'
+        );
+        add('Spots charts runtime exports the factory', moduleSource.includes('export function createSpotsChartsRuntime'));
+
+        const runtime = chartsModule.createSpotsChartsRuntime({
+          normalizeBandToken: (value) => String(value || '').trim().toUpperCase(),
+          escapeHtml: (value) => String(value == null ? '' : value),
+          escapeAttr: (value) => String(value == null ? '' : value),
+          formatBandLabel: (band) => String(band || '').trim().toUpperCase(),
+          formatDateSh6: (value) => `TS:${value}`,
+          formatNumberSh6: (value) => String(value),
+          bandClass: (band) => `band-${String(band || '').toLowerCase()}`,
+          sortBands: (values) => values.slice().sort()
+        });
+
+        const derived = {
+          tenMinuteSeries: [
+            { bucket: 100, qsos: 2 },
+            { bucket: 101, qsos: 3 }
+          ]
+        };
+        const qsos = [
+          { ts: 100 * 600000, band: '20m' },
+          { ts: 100 * 600000 + 60000, band: '20m' },
+          { ts: 101 * 600000, band: '40m' }
+        ];
+
+        const baseSeries = runtime.buildTenMinuteSeries({
+          derived,
+          qsos,
+          bandFilter: []
+        });
+        const filteredSeries = runtime.buildTenMinuteSeries({
+          derived,
+          qsos,
+          bandFilter: ['20M']
+        });
+        add(
+          'buildTenMinuteSeries uses derived aggregates when unfiltered and raw QSOs when filtered',
+          baseSeries.length === 2
+            && baseSeries[0].ts === 100 * 600000
+            && baseSeries[0].qsos === 2
+            && filteredSeries.length === 1
+            && filteredSeries[0].qsos === 2,
+          JSON.stringify({ baseSeries, filteredSeries })
+        );
+
+        const lineTimelineHtml = runtime.renderSpotRateTimeline({
+          derived,
+          qsos,
+          bandFilter: [],
+          spots: [
+            { ts: 100 * 600000 + 30000 },
+            { ts: 101 * 600000 + 30000 }
+          ]
+        });
+        add(
+          'renderSpotRateTimeline renders the SVG line timeline with explicit spot markers for smaller spot sets',
+          lineTimelineHtml.includes('aria-label="10 minute rate timeline"')
+            && lineTimelineHtml.includes('Time (UTC)')
+            && lineTimelineHtml.includes('10 min QSO rate')
+            && lineTimelineHtml.includes('spot-rate-line')
+            && lineTimelineHtml.includes('spot-line'),
+          lineTimelineHtml
+        );
+
+        const aggregatedTimelineHtml = runtime.renderSpotRateTimeline({
+          derived,
+          qsos,
+          bandFilter: [],
+          spots: Array.from({ length: 520 }, (_, idx) => ({ ts: 100 * 600000 + idx * 1000 }))
+        });
+        add(
+          'renderSpotRateTimeline aggregates dense spot sets into bucket rectangles',
+          aggregatedTimelineHtml.includes('spot-agg') && !aggregatedTimelineHtml.includes('spot-line'),
+          aggregatedTimelineHtml
+        );
+
+        const heatmapHtml = runtime.renderHeatmap({
+          heatmapData: [
+            { band: '40M', hours: { 5: 0, 6: 2 } },
+            { band: '20M', hours: { 5: 3, 6: 1 } }
+          ],
+          heatmapHours: [5, 6],
+          drillBand: '20M',
+          drillHour: 5,
+          slotAttr: 'B',
+          sourceAttr: 'rbn'
+        });
+        add(
+          'renderHeatmap renders clickable heatmap buttons with active state and data attributes',
+          heatmapHtml.includes('spots-heat-cell active')
+            && heatmapHtml.includes('data-slot="B"')
+            && heatmapHtml.includes('data-source="rbn"')
+            && heatmapHtml.includes('data-band="20M"')
+            && heatmapHtml.includes('data-hour="5"')
+            && heatmapHtml.includes('band-20m')
+            && heatmapHtml.includes('band-40m'),
+          heatmapHtml
+        );
+
+        const ok = checks.every((entry) => entry.ok);
+        setResult(ok, { checks });
+      } catch (err) {
+        add('Smoke test execution completed', false, err && err.message ? err.message : String(err));
+        setResult(false, {
+          error: err && err.stack ? err.stack : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
