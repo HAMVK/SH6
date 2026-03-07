@@ -196,6 +196,7 @@
   const LOAD_PANEL_RUNTIME_MODULE_URL = './modules/ui/load-panel-runtime.js?v=6.1.21';
   const ANALYSIS_CONTROLS_RUNTIME_MODULE_URL = './modules/ui/analysis-controls-runtime.js?v=6.1.21';
   const COACH_RUNTIME_MODULE_URL = './modules/coach/runtime.js?v=6.1.21';
+  const SPOTS_DATA_RUNTIME_MODULE_URL = './modules/spots/data-runtime.js?v=6.1.21';
   const INVESTIGATION_ACTIONS_RUNTIME_MODULE_URL = './modules/ui/investigation-actions-runtime.js?v=6.1.21';
   const INVESTIGATION_WORKSPACE_MODULE_URL = './modules/reports/investigation-workspace.js?v=6.1.21';
   const SESSION_CODEC_MODULE_URL = './modules/session/codec.js?v=6.1.21';
@@ -1293,6 +1294,8 @@
   let analysisControlsRuntime = null;
   let coachRuntimeModulePromise = null;
   let coachRuntime = null;
+  let spotsDataRuntimeModulePromise = null;
+  let spotsDataRuntime = null;
   let investigationActionsRuntimeModulePromise = null;
   let investigationActionsRuntime = null;
   let investigationWorkspaceModulePromise = null;
@@ -1832,6 +1835,42 @@
       throw new Error('coach runtime not loaded');
     }
     return coachRuntime;
+  }
+
+  function loadSpotsDataRuntimeModule() {
+    if (!spotsDataRuntimeModulePromise) {
+      spotsDataRuntimeModulePromise = import(SPOTS_DATA_RUNTIME_MODULE_URL)
+        .then((mod) => {
+          if (!mod || typeof mod.createSpotsDataRuntime !== 'function') {
+            throw new Error('spots data runtime module unavailable');
+          }
+          spotsDataRuntime = mod.createSpotsDataRuntime({
+            getState: () => state,
+            createSpotsState,
+            createRbnState,
+            getLoadedCompareSlots,
+            normalizeBandToken,
+            parseBandFromFreq,
+            normalizeCall,
+            normalizeSpotterBase,
+            runEngineTask,
+            updateDataStatus,
+            renderActiveReport,
+            spotsBaseUrl: SPOTS_BASE_URL,
+            rbnProxyUrl: RBN_PROXY_URL,
+            rbnSummaryOnlyThreshold: RBN_SUMMARY_ONLY_THRESHOLD
+          });
+          return spotsDataRuntime;
+        });
+    }
+    return spotsDataRuntimeModulePromise;
+  }
+
+  function getSpotsDataRuntime() {
+    if (!spotsDataRuntime) {
+      throw new Error('spots data runtime not loaded');
+    }
+    return spotsDataRuntime;
   }
 
   function loadInvestigationActionsRuntimeModule() {
@@ -10220,775 +10259,132 @@
     `;
   }
 
-  function formatDayOfYear(ts) {
-    const d = new Date(ts);
-    const start = Date.UTC(d.getUTCFullYear(), 0, 1);
-    const day = Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - start) / 86400000) + 1;
-    return String(day).padStart(3, '0');
-  }
-
   function buildSpotDayList(minTs, maxTs) {
-    if (!Number.isFinite(minTs) || !Number.isFinite(maxTs)) return [];
-    const days = [];
-    const start = Date.UTC(new Date(minTs).getUTCFullYear(), new Date(minTs).getUTCMonth(), new Date(minTs).getUTCDate());
-    const end = Date.UTC(new Date(maxTs).getUTCFullYear(), new Date(maxTs).getUTCMonth(), new Date(maxTs).getUTCDate());
-    for (let t = start; t <= end; t += 86400000) {
-      const d = new Date(t);
-      days.push({
-        year: d.getUTCFullYear(),
-        doy: formatDayOfYear(t)
-      });
-    }
-    return days;
+    return getSpotsDataRuntime().buildSpotDayList(minTs, maxTs);
   }
 
   function formatSpotDayLabel(day) {
-    if (!day || !Number.isFinite(day.year)) return '';
-    const dayNum = parseInt(day.doy, 10);
-    if (!Number.isFinite(dayNum)) return `${day.year}/${day.doy}`;
-    const date = new Date(Date.UTC(day.year, 0, 1));
-    date.setUTCDate(date.getUTCDate() + dayNum - 1);
-    const y = date.getUTCFullYear();
-    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
-    const d = String(date.getUTCDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+    return getSpotsDataRuntime().formatSpotDayLabel(day);
   }
 
   function buildRbnDayList(minTs, maxTs) {
-    if (!Number.isFinite(minTs) || !Number.isFinite(maxTs)) return [];
-    const days = [];
-    const start = Date.UTC(new Date(minTs).getUTCFullYear(), new Date(minTs).getUTCMonth(), new Date(minTs).getUTCDate());
-    const end = Date.UTC(new Date(maxTs).getUTCFullYear(), new Date(maxTs).getUTCMonth(), new Date(maxTs).getUTCDate());
-    for (let t = start; t <= end; t += 86400000) {
-      const d = new Date(t);
-      const y = d.getUTCFullYear();
-      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const day = String(d.getUTCDate()).padStart(2, '0');
-      days.push(`${y}${m}${day}`);
-    }
-    return days;
+    return getSpotsDataRuntime().buildRbnDayList(minTs, maxTs);
   }
 
   function formatRbnDayLabel(day) {
-    const raw = String(day || '');
-    if (!/^\d{8}$/.test(raw)) return raw;
-    const y = raw.slice(0, 4);
-    const m = raw.slice(4, 6);
-    const d = raw.slice(6, 8);
-    return `${y}-${m}-${d}`;
+    return getSpotsDataRuntime().formatRbnDayLabel(day);
   }
 
   function ensureSpotsState(slot) {
-    if (!slot.spotsState) {
-      slot.spotsState = createSpotsState();
-    }
-    return slot.spotsState;
+    return getSpotsDataRuntime().ensureSpotsState(slot);
   }
 
   function getSpotsState() {
-    return ensureSpotsState(state);
+    return getSpotsDataRuntime().getSpotsState();
   }
 
   function ensureRbnState(slot) {
-    if (!slot.rbnState) {
-      slot.rbnState = createRbnState();
-    }
-    return slot.rbnState;
+    return getSpotsDataRuntime().ensureRbnState(slot);
   }
 
   function getRbnState() {
-    return ensureRbnState(state);
+    return getSpotsDataRuntime().getRbnState();
   }
 
   function getSpotStateBySource(slot, source) {
-    return source === 'rbn' ? ensureRbnState(slot) : ensureSpotsState(slot);
+    return getSpotsDataRuntime().getSpotStateBySource(slot, source);
   }
 
   function selectRbnDaysForSlot(slot, minTs, maxTs) {
-    const allDays = buildRbnDayList(minTs, maxTs);
-    if (!allDays.length) return [];
-    const rbnState = ensureRbnState(slot);
-    const selected = Array.isArray(rbnState.selectedDays) ? rbnState.selectedDays : [];
-    const valid = selected.filter((d) => allDays.includes(d));
-    let out = [];
-    if (allDays.length <= 2) {
-      out = allDays.slice();
-    } else if (valid.length >= 2) {
-      out = valid.slice(0, 2);
-    } else if (valid.length === 1) {
-      out = [valid[0]];
-      const next = allDays.find((d) => d !== valid[0]);
-      if (next) out.push(next);
-    } else {
-      out = allDays.slice(0, 2);
-    }
-    rbnState.selectedDays = out.slice();
-    return out;
+    return getSpotsDataRuntime().selectRbnDaysForSlot(slot, minTs, maxTs);
   }
 
   function loadSpotsForSource(slot, source) {
-    if (source === 'rbn') return loadRbnForCurrentLog(slot);
-    return loadSpotsForCurrentLog(slot);
+    return getSpotsDataRuntime().loadSpotsForSource(slot, source);
   }
 
   function buildSpotWindowKey(minTs, maxTs) {
-    return `${minTs || 0}-${maxTs || 0}`;
+    return getSpotsDataRuntime().buildSpotWindowKey(minTs, maxTs);
   }
 
   function resolveSpotDisplayRange(slot = state) {
-    const localMin = Number(slot?.derived?.timeRange?.minTs);
-    const localMax = Number(slot?.derived?.timeRange?.maxTs);
-    if (!Number.isFinite(localMin) || !Number.isFinite(localMax)) {
-      return { minTs: null, maxTs: null };
-    }
-    let minTs = localMin;
-    let maxTs = localMax;
-    if (state.compareEnabled) {
-      const ranges = getLoadedCompareSlots()
-        .map((entry) => ({
-          minTs: Number(entry.slot?.derived?.timeRange?.minTs),
-          maxTs: Number(entry.slot?.derived?.timeRange?.maxTs)
-        }))
-        .filter((range) => Number.isFinite(range.minTs) && Number.isFinite(range.maxTs));
-      if (ranges.length) {
-        minTs = Math.min(...ranges.map((range) => range.minTs));
-        maxTs = Math.max(...ranges.map((range) => range.maxTs));
-      }
-    }
-    return { minTs, maxTs };
+    return getSpotsDataRuntime().resolveSpotDisplayRange(slot);
   }
 
   function isSpotWithinDisplayRange(ts, range) {
-    if (!Number.isFinite(ts)) return false;
-    if (!range || !Number.isFinite(range.minTs) || !Number.isFinite(range.maxTs)) return true;
-    return ts >= range.minTs && ts <= range.maxTs;
+    return getSpotsDataRuntime().isSpotWithinDisplayRange(ts, range);
   }
 
   function getSpotHeatmapHours(minTs, maxTs) {
-    const full = Array.from({ length: 24 }, (_, h) => h);
-    if (!Number.isFinite(minTs) || !Number.isFinite(maxTs)) return full;
-    if ((maxTs - minTs) >= (24 * 3600000 - 1)) return full;
-    const startBucket = Math.floor(minTs / 3600000);
-    const endBucket = Math.floor(maxTs / 3600000);
-    if (!Number.isFinite(startBucket) || !Number.isFinite(endBucket) || endBucket < startBucket) return full;
-    const out = [];
-    const seen = new Set();
-    for (let bucket = startBucket; bucket <= endBucket; bucket += 1) {
-      const hour = ((bucket % 24) + 24) % 24;
-      if (!seen.has(hour)) {
-        seen.add(hour);
-        out.push(hour);
-      }
-    }
-    return out.length ? out : full;
+    return getSpotsDataRuntime().getSpotHeatmapHours(minTs, maxTs);
   }
 
   function parseSpotLine(line) {
-    const parts = String(line || '').split('^');
-    if (parts.length < 6) return null;
-    const freqKHz = parseFloat(parts[0]);
-    const dxCall = (parts[1] || '').trim().toUpperCase();
-    const ts = parseInt(parts[2], 10) * 1000;
-    const comment = (parts[3] || '').trim();
-    const spotter = (parts[4] || '').trim().toUpperCase();
-    if (!dxCall || !spotter || !Number.isFinite(ts)) return null;
-    const freqMHz = Number.isFinite(freqKHz) ? freqKHz / 1000 : null;
-    const band = freqMHz ? normalizeBandToken(parseBandFromFreq(freqMHz) || '') : '';
-    return { dxCall, spotter, ts, freqKHz, freqMHz, band, comment };
+    return getSpotsDataRuntime().parseSpotLine(line);
   }
 
   function buildQsoTimeIndex(qsos) {
-    const map = new Map();
-    (qsos || []).forEach((q) => {
-      if (!Number.isFinite(q.ts)) return;
-      const band = normalizeBandToken(q.band || '');
-      if (!band) return;
-      if (!map.has(band)) map.set(band, []);
-      map.get(band).push(q.ts);
-    });
-    map.forEach((list) => list.sort((a, b) => a - b));
-    return map;
+    return getSpotsDataRuntime().buildQsoTimeIndex(qsos);
   }
 
   function buildQsoCallIndex(qsos) {
-    const map = new Map();
-    (qsos || []).forEach((q) => {
-      if (!Number.isFinite(q.ts) || !q.call) return;
-      const band = normalizeBandToken(q.band || '');
-      if (!band) return;
-      const call = normalizeCall(q.call);
-      if (!call) return;
-      if (!map.has(band)) map.set(band, new Map());
-      const bandMap = map.get(band);
-      if (!bandMap.has(call)) bandMap.set(call, []);
-      bandMap.get(call).push(q.ts);
-    });
-    map.forEach((bandMap) => {
-      bandMap.forEach((list) => list.sort((a, b) => a - b));
-    });
-    return map;
+    return getSpotsDataRuntime().buildQsoCallIndex(qsos);
   }
 
   function materializeQsoTimeIndex(entries) {
-    return new Map((entries || []).map(([band, list]) => [band, Array.isArray(list) ? list.slice() : []]));
+    return getSpotsDataRuntime().materializeQsoTimeIndex(entries);
   }
 
   function materializeQsoCallIndex(entries) {
-    return new Map((entries || []).map(([band, bandEntries]) => [
-      band,
-      new Map((bandEntries || []).map(([call, list]) => [call, Array.isArray(list) ? list.slice() : []]))
-    ]));
+    return getSpotsDataRuntime().materializeQsoCallIndex(entries);
   }
 
   async function buildSpotIndexesAsync(qsos) {
-    const lite = (qsos || []).map((q) => ({
-      ts: q?.ts,
-      band: q?.band || '',
-      call: q?.call || ''
-    }));
-    try {
-      const data = await runEngineTask('spotIndexes', { qsos: lite });
-      return {
-        qsoIndex: materializeQsoTimeIndex(data?.timeIndexEntries),
-        qsoCallIndex: materializeQsoCallIndex(data?.callIndexEntries)
-      };
-    } catch (err) {
-      return {
-        qsoIndex: buildQsoTimeIndex(qsos),
-        qsoCallIndex: buildQsoCallIndex(qsos)
-      };
-    }
+    return getSpotsDataRuntime().buildSpotIndexesAsync(qsos);
   }
 
   function hasQsoWithin(band, ts, index, windowMs) {
-    if (!band || !index.has(band)) return false;
-    const list = index.get(band);
-    let lo = 0;
-    let hi = list.length - 1;
-    while (lo <= hi) {
-      const mid = Math.floor((lo + hi) / 2);
-      const val = list[mid];
-      if (val < ts) lo = mid + 1;
-      else if (val > ts) hi = mid - 1;
-      else return true;
-    }
-    const candidates = [];
-    if (lo < list.length) candidates.push(list[lo]);
-    if (lo - 1 >= 0) candidates.push(list[lo - 1]);
-    return candidates.some((t) => Math.abs(t - ts) <= windowMs);
+    return getSpotsDataRuntime().hasQsoWithin(band, ts, index, windowMs);
   }
 
   function hasQsoCallWithin(band, call, ts, index, windowMs) {
-    if (!band || !call || !index.has(band)) return false;
-    const bandMap = index.get(band);
-    const key = normalizeCall(call);
-    if (!bandMap || !bandMap.has(key)) return false;
-    const list = bandMap.get(key);
-    let lo = 0;
-    let hi = list.length - 1;
-    while (lo <= hi) {
-      const mid = Math.floor((lo + hi) / 2);
-      const val = list[mid];
-      if (val < ts) lo = mid + 1;
-      else if (val > ts) hi = mid - 1;
-      else return true;
-    }
-    const candidates = [];
-    if (lo < list.length) candidates.push(list[lo]);
-    if (lo - 1 >= 0) candidates.push(list[lo - 1]);
-    return candidates.some((t) => Math.abs(t - ts) <= windowMs);
+    return getSpotsDataRuntime().hasQsoCallWithin(band, call, ts, index, windowMs);
   }
 
   function getNearestQsoDeltaMinutes(band, ts, index) {
-    if (!band || !index.has(band)) return null;
-    const list = index.get(band);
-    let lo = 0;
-    let hi = list.length - 1;
-    while (lo <= hi) {
-      const mid = Math.floor((lo + hi) / 2);
-      const val = list[mid];
-      if (val < ts) lo = mid + 1;
-      else if (val > ts) hi = mid - 1;
-      else return 0;
-    }
-    const candidates = [];
-    if (lo < list.length) candidates.push(list[lo]);
-    if (lo - 1 >= 0) candidates.push(list[lo - 1]);
-    if (!candidates.length) return null;
-    const best = Math.min(...candidates.map((t) => Math.abs(t - ts)));
-    return best / 60000;
+    return getSpotsDataRuntime().getNearestQsoDeltaMinutes(band, ts, index);
   }
 
   function getNearestQsoCallDeltaMinutes(band, call, ts, index) {
-    if (!band || !call || !index.has(band)) return null;
-    const bandMap = index.get(band);
-    const key = normalizeCall(call);
-    if (!bandMap || !bandMap.has(key)) return null;
-    const list = bandMap.get(key);
-    let lo = 0;
-    let hi = list.length - 1;
-    while (lo <= hi) {
-      const mid = Math.floor((lo + hi) / 2);
-      const val = list[mid];
-      if (val < ts) lo = mid + 1;
-      else if (val > ts) hi = mid - 1;
-      else return 0;
-    }
-    const candidates = [];
-    if (lo < list.length) candidates.push(list[lo]);
-    if (lo - 1 >= 0) candidates.push(list[lo - 1]);
-    if (!candidates.length) return null;
-    const best = Math.min(...candidates.map((t) => Math.abs(t - ts)));
-    return best / 60000;
+    return getSpotsDataRuntime().getNearestQsoCallDeltaMinutes(band, call, ts, index);
   }
 
   async function fetchSpotFile(url) {
-    const res = await fetch(url, { cache: 'no-store' });
-    if (res.status === 429) {
-      const retryAfter = String(res.headers.get('retry-after') || '').trim();
-      const retryAfterSeconds = retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) : null;
-      const err = new Error('Rate limited (HTTP 429).');
-      err.status = 429;
-      err.retryAfterMs = Number.isFinite(retryAfterSeconds) ? retryAfterSeconds * 1000 : 15000;
-      throw err;
-    }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    if (!/\.gz$/i.test(url)) return res.text();
-    if (typeof DecompressionStream !== 'function') {
-      throw new Error('gzip not supported in this browser');
-    }
-    const buffer = await res.arrayBuffer();
-    const ds = new DecompressionStream('gzip');
-    const stream = new Response(buffer).body.pipeThrough(ds);
-    const text = await new Response(stream).text();
-    return text;
+    return getSpotsDataRuntime().fetchSpotFile(url);
   }
 
   function formatRbnComment(spot) {
-    const parts = [];
-    if (Number.isFinite(spot.snr)) parts.push(`SNR ${spot.snr} dB`);
-    if (Number.isFinite(spot.speed)) parts.push(`Speed ${spot.speed}`);
-    if (spot.mode) parts.push(String(spot.mode).toUpperCase());
-    if (spot.txMode && spot.txMode !== spot.mode) parts.push(`TX ${String(spot.txMode).toUpperCase()}`);
-    if (spot.spotterRaw && spot.spotterRaw !== spot.spotter) parts.push(`Skimmer ${spot.spotterRaw}`);
-    return parts.join(' · ');
+    return getSpotsDataRuntime().formatRbnComment(spot);
   }
 
   function normalizeRbnSpot(raw) {
-    if (!raw) return null;
-    const spotterRaw = normalizeCall(raw.spotterRaw || raw.spotter || '');
-    const spotter = normalizeSpotterBase(raw.spotter || spotterRaw);
-    const dxCall = normalizeCall(raw.dxCall || '');
-    const ts = Number(raw.ts);
-    const freqKHz = raw.freqKHz != null ? Number(raw.freqKHz) : Number(raw.freq);
-    const freqMHz = Number.isFinite(raw.freqMHz) ? Number(raw.freqMHz) : (Number.isFinite(freqKHz) ? freqKHz / 1000 : null);
-    let band = normalizeBandToken(raw.band || '');
-    if (!band && Number.isFinite(freqMHz)) band = normalizeBandToken(parseBandFromFreq(freqMHz));
-    const snr = raw.snr != null ? Number(raw.snr) : (raw.db != null ? Number(raw.db) : null);
-    const speed = raw.speed != null ? Number(raw.speed) : null;
-    const mode = raw.mode || '';
-    const txMode = raw.txMode || raw.tx_mode || '';
-    const spot = {
-      spotter,
-      spotterRaw,
-      dxCall,
-      ts: Number.isFinite(ts) ? ts : null,
-      freqKHz: Number.isFinite(freqKHz) ? freqKHz : null,
-      freqMHz: Number.isFinite(freqMHz) ? freqMHz : null,
-      band: band || '',
-      mode,
-      snr: Number.isFinite(snr) ? snr : null,
-      speed: Number.isFinite(speed) ? speed : null,
-      txMode
-    };
-    spot.comment = formatRbnComment(spot);
-    return spot;
+    return getSpotsDataRuntime().normalizeRbnSpot(raw);
   }
 
   async function fetchRbnSpots(call, days) {
-    const params = new URLSearchParams();
-    if (call) params.set('call', call);
-    if (days && days.length) params.set('days', days.join(','));
-    const url = `${RBN_PROXY_URL}?${params.toString()}`;
-    const res = await fetch(url, { cache: 'no-store' });
-    if (res.status === 429) {
-      const retryAfter = String(res.headers.get('retry-after') || '').trim();
-      const retryAfterSeconds = retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter) : null;
-      const err = new Error('Rate limited (HTTP 429).');
-      err.status = 429;
-      err.retryAfterMs = Number.isFinite(retryAfterSeconds) ? retryAfterSeconds * 1000 : 15000;
-      throw err;
-    }
-    if (res.status === 404) {
-      // Treat "not found" as an empty dataset; some calls/days simply have no RBN coverage.
-      return {
-        call: String(call || ''),
-        days: Array.isArray(days) ? days.slice() : [],
-        total: 0,
-        totalOfUs: 0,
-        totalByUs: 0,
-        capPerSide: 0,
-        truncatedOfUs: false,
-        truncatedByUs: false,
-        ofUsSpots: [],
-        byUsSpots: [],
-        errors: [],
-        notFound: true
-      };
-    }
-    if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try {
-        const body = await res.json();
-        if (body && typeof body === 'object' && body.error) msg = String(body.error);
-      } catch (err) {
-        // ignore parse failures
-      }
-      throw new Error(msg);
-    }
-    const data = await res.json();
-    if (!data || typeof data !== 'object') throw new Error('Invalid RBN response');
-    return data;
+    return getSpotsDataRuntime().fetchRbnSpots(call, days);
   }
 
   async function loadSpotsForCurrentLog(slot = state) {
-    const spotsState = ensureSpotsState(slot);
-    if (!slot.derived || !slot.qsoData) return;
-    const call = normalizeCall(slot.derived.contestMeta?.stationCallsign || '');
-    const minTs = slot.derived.timeRange?.minTs;
-    const maxTs = slot.derived.timeRange?.maxTs;
-    if (!call || !Number.isFinite(minTs) || !Number.isFinite(maxTs)) {
-      spotsState.status = 'error';
-      spotsState.error = 'Missing callsign or time range.';
-      renderActiveReport();
-      return;
-    }
-    const windowKey = buildSpotWindowKey(minTs, maxTs);
-    const attemptKey = `${call}|${windowKey}`;
-    const now = Date.now();
-    const minRetryDelayMs = (spotsState.lastErrorStatus === 429)
-      ? Math.max(3000, Math.min(60000, Number(spotsState.retryAfterMs) || 15000))
-      : 60000;
-    if (
-      spotsState.status === 'error'
-      && String(spotsState.lastErrorKey || '') === attemptKey
-      && (now - Number(spotsState.lastErrorAt || 0)) < minRetryDelayMs
-    ) {
-      // Avoid rapid retry loops on stable errors (e.g., missing files).
-      return;
-    }
-    if (
-      spotsState.status === 'qrx'
-      && String(spotsState.lastErrorKey || '') === attemptKey
-      && (now - Number(spotsState.lastErrorAt || 0)) < minRetryDelayMs
-    ) {
-      return;
-    }
-    if (spotsState.status === 'ready' && spotsState.lastWindowKey === windowKey && spotsState.lastCall === call) {
-      renderActiveReport();
-      return;
-    }
-    if (
-      spotsState.status === 'loading'
-      && spotsState.inflightPromise
-      && String(spotsState.inflightKey || '') === attemptKey
-    ) {
-      return spotsState.inflightPromise;
-    }
-    spotsState.status = 'loading';
-    spotsState.error = null;
-    spotsState.lastErrorKey = null;
-    spotsState.lastErrorAt = 0;
-    spotsState.lastErrorStatus = null;
-    spotsState.retryAfterMs = 0;
-    spotsState.errors = [];
-    spotsState.stats = null;
-    spotsState.inflightKey = attemptKey;
-    updateDataStatus();
-    renderActiveReport();
-    const days = buildSpotDayList(minTs, maxTs);
-    const urls = days.map((d) => ({
-      day: d,
-      urls: [
-        `${SPOTS_BASE_URL}/${d.year}/${d.doy}.dat`,
-        `${SPOTS_BASE_URL}/${d.year}/${d.doy}.dat.gz`
-      ]
-    }));
-    const { qsoIndex, qsoCallIndex } = await buildSpotIndexesAsync(slot.qsoData.qsos);
-    try {
-      if (spotsState.retryTimer) {
-        window.clearTimeout(spotsState.retryTimer);
-        spotsState.retryTimer = null;
-      }
-      spotsState.inflightPromise = (async () => {
-        let total = 0;
-        const ofUsSpots = [];
-        const byUsSpots = [];
-        for (const entry of urls) {
-          let text = null;
-          let lastErr = null;
-          for (const url of entry.urls) {
-            try {
-              text = await fetchSpotFile(url);
-              break;
-            } catch (err) {
-              lastErr = err;
-              continue;
-            }
-          }
-          if (text == null) throw lastErr || new Error('Spot file missing');
-          const lines = text.split(/\r?\n/);
-          for (const line of lines) {
-            if (!line) continue;
-            const spot = parseSpotLine(line);
-            if (!spot) continue;
-            total += 1;
-            if (spot.dxCall === call) {
-              ofUsSpots.push(spot);
-            }
-            if (spot.spotter === call) {
-              byUsSpots.push(spot);
-            }
-          }
-        }
-        return { total, ofUsSpots, byUsSpots };
-      })();
-      const data = await spotsState.inflightPromise;
-      spotsState.status = 'ready';
-      spotsState.error = null;
-      spotsState.lastWindowKey = windowKey;
-      spotsState.lastCall = call;
-      spotsState.totalScanned = data.total;
-      spotsState.raw = { ofUsSpots: data.ofUsSpots, byUsSpots: data.byUsSpots };
-      spotsState.totalOfUs = data.ofUsSpots.length;
-      spotsState.totalByUs = data.byUsSpots.length;
-      spotsState.capPerSide = null;
-      spotsState.truncatedOfUs = false;
-      spotsState.truncatedByUs = false;
-      spotsState.summaryOnly = false;
-      spotsState.qsoIndex = qsoIndex;
-      spotsState.qsoCallIndex = qsoCallIndex;
-      computeSpotsStats(slot);
-    } catch (err) {
-      const status = err && typeof err === 'object' && Number.isFinite(err.status) ? Number(err.status) : null;
-      const retryAfterMs = err && typeof err === 'object' && Number.isFinite(err.retryAfterMs) ? Number(err.retryAfterMs) : 0;
-      spotsState.lastErrorStatus = status;
-      spotsState.retryAfterMs = retryAfterMs;
-      if (status === 429) {
-        spotsState.status = 'qrx';
-        spotsState.error = null;
-        if (spotsState.retryTimer) window.clearTimeout(spotsState.retryTimer);
-        spotsState.retryTimer = window.setTimeout(() => loadSpotsForCurrentLog(slot), retryAfterMs || 15000);
-      } else {
-        spotsState.status = 'error';
-        spotsState.error = err && err.message ? err.message : 'Failed to load spots.';
-      }
-      spotsState.lastErrorKey = attemptKey;
-      spotsState.lastErrorAt = Date.now();
-    }
-    if (spotsState.status !== 'loading') {
-      spotsState.inflightKey = null;
-      spotsState.inflightPromise = null;
-    }
-    updateDataStatus();
-    renderActiveReport();
+    return getSpotsDataRuntime().loadSpotsForCurrentLog(slot);
   }
 
   async function loadRbnForCurrentLog(slot = state) {
-    const rbnState = ensureRbnState(slot);
-    if (!slot.derived || !slot.qsoData) return;
-    const call = normalizeCall(slot.derived.contestMeta?.stationCallsign || '');
-    const minTs = slot.derived.timeRange?.minTs;
-    const maxTs = slot.derived.timeRange?.maxTs;
-    if (!call || !Number.isFinite(minTs) || !Number.isFinite(maxTs)) {
-      rbnState.status = 'error';
-      rbnState.error = 'Missing callsign or time range.';
-      renderActiveReport();
-      return;
-    }
-    const windowKey = buildSpotWindowKey(minTs, maxTs);
-    const days = selectRbnDaysForSlot(slot, minTs, maxTs);
-    const daysKey = (days || []).join(',');
-    const attemptKey = `${call}|${windowKey}|${daysKey}`;
-    const now = Date.now();
-    const minRetryDelayMs = (rbnState.lastErrorStatus === 429)
-      ? Math.max(3000, Math.min(60000, Number(rbnState.retryAfterMs) || 15000))
-      : 60000;
-    if (
-      rbnState.status === 'error'
-      && String(rbnState.lastErrorKey || '') === attemptKey
-      && (now - Number(rbnState.lastErrorAt || 0)) < minRetryDelayMs
-    ) {
-      // Avoid rapid retry loops on stable errors.
-      return;
-    }
-    if (
-      rbnState.status === 'ready'
-      && rbnState.lastWindowKey === windowKey
-      && rbnState.lastCall === call
-      && String(rbnState.lastDaysKey || '') === daysKey
-    ) {
-      renderActiveReport();
-      return;
-    }
-    rbnState.status = 'loading';
-    rbnState.error = null;
-    rbnState.lastErrorKey = null;
-    rbnState.lastErrorAt = 0;
-    rbnState.lastErrorStatus = null;
-    rbnState.retryAfterMs = 0;
-    rbnState.errors = [];
-    rbnState.stats = null;
-    rbnState.inflightKey = attemptKey;
-    updateDataStatus();
-    renderActiveReport();
-    const { qsoIndex, qsoCallIndex } = await buildSpotIndexesAsync(slot.qsoData.qsos);
-    try {
-      if (rbnState.retryTimer) {
-        window.clearTimeout(rbnState.retryTimer);
-        rbnState.retryTimer = null;
-      }
-      if (rbnState.inflightPromise && String(rbnState.inflightKey || '') === attemptKey) {
-        // Reuse the in-flight promise if we got retriggered by a render loop.
-        // (Prevents accidental parallel fetches + extra rate-limit hits.)
-      } else {
-        rbnState.inflightKey = attemptKey;
-        rbnState.inflightPromise = fetchRbnSpots(call, days);
-      }
-      const data = await rbnState.inflightPromise;
-      const ofUsSpots = (data.ofUsSpots || []).map(normalizeRbnSpot).filter(Boolean);
-      const byUsSpots = (data.byUsSpots || []).map(normalizeRbnSpot).filter(Boolean);
-      rbnState.status = 'ready';
-      rbnState.error = null;
-      rbnState.lastWindowKey = windowKey;
-      rbnState.lastCall = call;
-      rbnState.lastDaysKey = daysKey;
-      rbnState.totalScanned = data.total || data.scanned || 0;
-      rbnState.errors = Array.isArray(data.errors) ? data.errors : [];
-      rbnState.totalOfUs = Number.isFinite(data.totalOfUs) ? data.totalOfUs : ofUsSpots.length;
-      rbnState.totalByUs = Number.isFinite(data.totalByUs) ? data.totalByUs : byUsSpots.length;
-      rbnState.capPerSide = Number.isFinite(data.capPerSide) ? data.capPerSide : null;
-      rbnState.truncatedOfUs = Boolean(data.truncatedOfUs);
-      rbnState.truncatedByUs = Boolean(data.truncatedByUs);
-      rbnState.summaryOnly = (rbnState.totalOfUs + rbnState.totalByUs) > RBN_SUMMARY_ONLY_THRESHOLD;
-      rbnState.raw = { ofUsSpots, byUsSpots };
-      rbnState.qsoIndex = qsoIndex;
-      rbnState.qsoCallIndex = qsoCallIndex;
-      computeSpotsStats(slot, rbnState);
-    } catch (err) {
-      const status = err && typeof err === 'object' && Number.isFinite(err.status) ? Number(err.status) : null;
-      const retryAfterMs = err && typeof err === 'object' && Number.isFinite(err.retryAfterMs) ? Number(err.retryAfterMs) : 0;
-      rbnState.lastErrorStatus = status;
-      rbnState.retryAfterMs = retryAfterMs;
-      if (status === 429) {
-        rbnState.status = 'qrx';
-        rbnState.error = null;
-        if (rbnState.retryTimer) window.clearTimeout(rbnState.retryTimer);
-        rbnState.retryTimer = window.setTimeout(() => loadRbnForCurrentLog(slot), retryAfterMs || 15000);
-      } else {
-        rbnState.status = 'error';
-        rbnState.error = err && err.message ? err.message : 'Failed to load RBN spots.';
-      }
-      rbnState.lastErrorKey = attemptKey;
-      rbnState.lastErrorAt = Date.now();
-    }
-    if (rbnState.status !== 'loading') {
-      rbnState.inflightKey = null;
-      rbnState.inflightPromise = null;
-    }
-    updateDataStatus();
-    renderActiveReport();
+    return getSpotsDataRuntime().loadRbnForCurrentLog(slot);
   }
 
   function computeSpotsStats(slot = state, spotsStateOverride = null) {
-    const spotsState = spotsStateOverride || ensureSpotsState(slot);
-    if (!spotsState.raw || !slot.qsoData) return;
-    const call = String(slot.derived?.contestMeta?.stationCallsign || '').toUpperCase();
-    const windowMinutes = Number(spotsState.windowMinutes) || 15;
-    const windowMs = windowMinutes * 60 * 1000;
-    const filterSet = new Set(spotsState.bandFilter || []);
-    const bandAllowed = (band) => {
-      if (!filterSet.size) return true;
-      const key = band || 'unknown';
-      return filterSet.has(key);
-    };
-    const displayRange = resolveSpotDisplayRange(slot);
-    const qsoIndex = spotsState.qsoIndex || buildQsoTimeIndex(slot.qsoData.qsos);
-    const qsoCallIndex = spotsState.qsoCallIndex || buildQsoCallIndex(slot.qsoData.qsos);
-    let ofUs = 0;
-    let byUs = 0;
-    let ofUsMatched = 0;
-    let byUsMatched = 0;
-    let byUsMatchedDx = 0;
-    const spotters = new Map();
-    const dxTargets = new Map();
-    const bandStats = new Map();
-    const responseTimes = [];
-    const responseDxTimes = [];
-    const heatmap = new Map();
-    const ofUsSpots = [];
-    const byUsSpots = [];
-    (spotsState.raw.ofUsSpots || []).forEach((spot) => {
-      if (!isSpotWithinDisplayRange(spot.ts, displayRange)) return;
-      if (!bandAllowed(spot.band)) return;
-      ofUs += 1;
-      spotters.set(spot.spotter, (spotters.get(spot.spotter) || 0) + 1);
-      const bandKey = spot.band || 'unknown';
-      if (!bandStats.has(bandKey)) bandStats.set(bandKey, { ofUs: 0, ofUsMatched: 0, byUs: 0, byUsMatched: 0 });
-      bandStats.get(bandKey).ofUs += 1;
-      const matched = hasQsoWithin(spot.band, spot.ts, qsoIndex, windowMs);
-      if (matched) {
-        ofUsMatched += 1;
-        bandStats.get(bandKey).ofUsMatched += 1;
-      }
-      const delta = matched ? getNearestQsoDeltaMinutes(spot.band, spot.ts, qsoIndex) : null;
-      if (matched && Number.isFinite(delta)) responseTimes.push(delta);
-      ofUsSpots.push({ ...spot, matched, delta });
-      if (spot.band) {
-        if (!heatmap.has(spot.band)) heatmap.set(spot.band, Array.from({ length: 24 }, () => 0));
-        const hour = new Date(spot.ts).getUTCHours();
-        heatmap.get(spot.band)[hour] = (heatmap.get(spot.band)[hour] || 0) + 1;
-      }
-    });
-    (spotsState.raw.byUsSpots || []).forEach((spot) => {
-      if (!isSpotWithinDisplayRange(spot.ts, displayRange)) return;
-      if (!bandAllowed(spot.band)) return;
-      byUs += 1;
-      dxTargets.set(spot.dxCall, (dxTargets.get(spot.dxCall) || 0) + 1);
-      const bandKey = spot.band || 'unknown';
-      if (!bandStats.has(bandKey)) bandStats.set(bandKey, { ofUs: 0, ofUsMatched: 0, byUs: 0, byUsMatched: 0 });
-      bandStats.get(bandKey).byUs += 1;
-      const matched = hasQsoWithin(spot.band, spot.ts, qsoIndex, windowMs);
-      if (matched) {
-        byUsMatched += 1;
-        bandStats.get(bandKey).byUsMatched += 1;
-      }
-      const matchedDx = hasQsoCallWithin(spot.band, spot.dxCall, spot.ts, qsoCallIndex, windowMs);
-      const deltaDx = matchedDx ? getNearestQsoCallDeltaMinutes(spot.band, spot.dxCall, spot.ts, qsoCallIndex) : null;
-      if (matchedDx) {
-        byUsMatchedDx += 1;
-        if (Number.isFinite(deltaDx)) responseDxTimes.push(deltaDx);
-      }
-      byUsSpots.push({ ...spot, matched, matchedDx, deltaDx: Number.isFinite(deltaDx) ? deltaDx : null });
-    });
-    const topSpotters = Array.from(spotters.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    const topDx = Array.from(dxTargets.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    spotsState.stats = {
-      total: spotsState.totalScanned || 0,
-      ofUs,
-      byUs,
-      ofUsMatched,
-      byUsMatched,
-      byUsMatchedDx,
-      topSpotters,
-      topDx,
-      ofUsSpots,
-      byUsSpots,
-      bandStats: Array.from(bandStats.entries()).map(([band, info]) => ({ band, ...info })),
-      responseTimes,
-      responseDxTimes,
-      heatmap: Array.from(heatmap.entries()).map(([band, hours]) => ({ band, hours }))
-    };
+    return getSpotsDataRuntime().computeSpotsStats(slot, spotsStateOverride);
   }
 
   function renderSpots(options = {}) {
@@ -19661,6 +19057,7 @@
     const loadPanelRuntimeReady = loadLoadPanelRuntimeModule();
     const analysisControlsRuntimeReady = loadAnalysisControlsRuntimeModule();
     const coachRuntimeReady = loadCoachRuntimeModule();
+    const spotsDataRuntimeReady = loadSpotsDataRuntimeModule();
     const investigationActionsRuntimeReady = loadInvestigationActionsRuntimeModule();
     const investigationWorkspaceReady = loadInvestigationWorkspaceModule();
     const sessionCodecReady = loadSessionCodecModule();
@@ -19674,6 +19071,7 @@
     await loadPanelRuntimeReady;
     await analysisControlsRuntimeReady;
     await coachRuntimeReady;
+    await spotsDataRuntimeReady;
     await investigationActionsRuntimeReady;
     setupNavSearch();
     rebuildReports();

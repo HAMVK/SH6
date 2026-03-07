@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spots Data Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>Spots Data Runtime Smoke</h1>
+  <p>Checks the extracted spots/RBN data runtime for day selection, worker index materialization, and spots/RBN loading behavior.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      function createBaseSpotsState(source = 'spots') {
+        return {
+          source,
+          status: 'idle',
+          error: null,
+          errors: [],
+          stats: null,
+          lastWindowKey: null,
+          lastCall: null,
+          lastDaysKey: null,
+          lastErrorKey: null,
+          lastErrorAt: 0,
+          lastErrorStatus: null,
+          retryAfterMs: 0,
+          retryTimer: null,
+          inflightKey: null,
+          inflightPromise: null,
+          windowMinutes: 15,
+          bandFilter: [],
+          raw: null,
+          totalScanned: 0,
+          totalOfUs: 0,
+          totalByUs: 0,
+          capPerSide: null,
+          truncatedOfUs: false,
+          truncatedByUs: false,
+          summaryOnly: false,
+          qsoIndex: null,
+          qsoCallIndex: null,
+          drillBand: '',
+          drillHour: null,
+          drillContinent: '',
+          drillCqZone: '',
+          drillItuZone: ''
+        };
+      }
+
+      function parseBandFromFreq(freqMHz) {
+        if (freqMHz >= 14 && freqMHz < 14.5) return '20M';
+        if (freqMHz >= 7 && freqMHz < 7.3) return '40M';
+        return '';
+      }
+
+      function normalizeBandToken(value) {
+        return String(value || '').trim().toUpperCase();
+      }
+
+      function normalizeCall(value) {
+        return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+      }
+
+      function normalizeSpotterBase(value) {
+        return normalizeCall(value).replace(/-\d+$/, '');
+      }
+
+      try {
+        const [mainSource, moduleSource, spotsModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/spots/data-runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/spots/data-runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/spots/data-runtime.js')
+        ]);
+
+        add('Main.js imports the spots data runtime module', mainSource.includes("const SPOTS_DATA_RUNTIME_MODULE_URL = './modules/spots/data-runtime.js?v=6.1.21';"));
+        add('Main.js preloads the spots data runtime during init', mainSource.includes('const spotsDataRuntimeReady = loadSpotsDataRuntimeModule();') && mainSource.includes('await spotsDataRuntimeReady;'));
+        add(
+          'Main.js delegates the extracted spots helpers to the runtime',
+          mainSource.includes('return getSpotsDataRuntime().buildSpotDayList(minTs, maxTs);')
+            && mainSource.includes('return getSpotsDataRuntime().loadSpotsForCurrentLog(slot);')
+            && mainSource.includes('return getSpotsDataRuntime().computeSpotsStats(slot, spotsStateOverride);')
+        );
+        add('Spots data runtime exports the factory', moduleSource.includes('export function createSpotsDataRuntime'));
+
+        const engineCalls = [];
+        const renderCalls = [];
+        const dataStatusCalls = [];
+        const fetchCalls = [];
+        let state = null;
+
+        const rangeStartMs = Date.UTC(2025, 10, 16, 10, 0, 0);
+        const rangeEndMs = Date.UTC(2025, 10, 16, 11, 0, 0);
+        const spotOfUsMs = Date.UTC(2025, 10, 16, 10, 5, 0);
+        const spotByUsMs = Date.UTC(2025, 10, 16, 10, 10, 0);
+
+        const runtime = spotsModule.createSpotsDataRuntime({
+          getState: () => state,
+          createSpotsState: (source = 'spots') => createBaseSpotsState(source),
+          createRbnState: () => createBaseSpotsState('rbn'),
+          getLoadedCompareSlots: () => [],
+          normalizeBandToken,
+          parseBandFromFreq,
+          normalizeCall,
+          normalizeSpotterBase,
+          runEngineTask: async (type, payload) => {
+            engineCalls.push({ type, payload });
+            return {
+              timeIndexEntries: [['20M', [spotOfUsMs, spotByUsMs]]],
+              callIndexEntries: [['20M', [['K1ABC', [spotByUsMs]]]]]
+            };
+          },
+          updateDataStatus: () => dataStatusCalls.push('update'),
+          renderActiveReport: () => renderCalls.push('render'),
+          spotsBaseUrl: 'https://spots.example.test',
+          rbnProxyUrl: 'https://rbn.example.test/query',
+          rbnSummaryOnlyThreshold: 10
+        });
+
+        const spotDays = runtime.buildSpotDayList(Date.UTC(2025, 10, 16, 0, 0, 0), Date.UTC(2025, 10, 17, 1, 0, 0));
+        add('buildSpotDayList returns an inclusive UTC day range', spotDays.length === 2 && spotDays[0].doy === '320' && spotDays[1].doy === '321', JSON.stringify(spotDays));
+
+        state = {
+          compareEnabled: false,
+          derived: {
+            contestMeta: { stationCallsign: 'S55OO' },
+            timeRange: {
+              minTs: rangeStartMs,
+              maxTs: rangeEndMs
+            }
+          },
+          qsoData: {
+            qsos: [
+              { ts: spotOfUsMs, band: '20M', call: 'K1ABC' },
+              { ts: spotByUsMs, band: '20M', call: 'K1ABC' }
+            ]
+          },
+          spotsState: createBaseSpotsState(),
+          rbnState: Object.assign(createBaseSpotsState('rbn'), {
+            selectedDays: ['20251116', '20251117', '20251118']
+          })
+        };
+
+        const selectedDays = runtime.selectRbnDaysForSlot(
+          state,
+          state.derived.timeRange.minTs,
+          Date.UTC(2025, 10, 18, 1, 0, 0)
+        );
+        add('selectRbnDaysForSlot preserves two valid selected days', selectedDays.length === 2 && selectedDays[0] === '20251116' && selectedDays[1] === '20251117', JSON.stringify(selectedDays));
+
+        const indexed = await runtime.buildSpotIndexesAsync(state.qsoData.qsos);
+        add(
+          'buildSpotIndexesAsync materializes worker output into Maps',
+          engineCalls.length === 1
+            && indexed.qsoIndex instanceof Map
+            && indexed.qsoIndex.get('20M')?.length === 2
+            && indexed.qsoCallIndex.get('20M') instanceof Map
+            && indexed.qsoCallIndex.get('20M').get('K1ABC')?.length === 1,
+          JSON.stringify({ engineCalls: engineCalls.length, timeKeys: Array.from(indexed.qsoIndex.keys()) })
+        );
+
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = async (url) => {
+          fetchCalls.push(String(url));
+          if (String(url).startsWith('https://spots.example.test/')) {
+            return new Response(
+              [
+                `14000^S55OO^${Math.floor(spotOfUsMs / 1000)}^CQ^K1ABC^x`,
+                `14000^K1ABC^${Math.floor(spotByUsMs / 1000)}^S&P^S55OO^x`
+              ].join('\n'),
+              { status: 200 }
+            );
+          }
+          if (String(url).startsWith('https://rbn.example.test/query')) {
+            return new Response(JSON.stringify({
+              total: 2,
+              totalOfUs: 1,
+              totalByUs: 1,
+              capPerSide: 0,
+              truncatedOfUs: false,
+              truncatedByUs: false,
+              errors: [],
+              ofUsSpots: [
+                {
+                  spotter: 'K1ABC',
+                  dxCall: 'S55OO',
+                  ts: spotOfUsMs,
+                  freqKHz: 14000,
+                  snr: 18,
+                  mode: 'cw'
+                }
+              ],
+              byUsSpots: [
+                {
+                  spotter: 'S55OO',
+                  dxCall: 'K1ABC',
+                  ts: spotByUsMs,
+                  freqKHz: 14000,
+                  snr: 20,
+                  mode: 'cw'
+                }
+              ]
+            }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' }
+            });
+          }
+          return new Response('not found', { status: 404 });
+        };
+
+        try {
+          await runtime.loadSpotsForCurrentLog(state);
+          add(
+            'loadSpotsForCurrentLog loads spots and computes matched stats',
+            state.spotsState.status === 'ready'
+              && state.spotsState.totalOfUs === 1
+              && state.spotsState.totalByUs === 1
+              && state.spotsState.stats?.ofUsMatched === 1
+              && state.spotsState.stats?.byUsMatchedDx === 1,
+            JSON.stringify({
+              status: state.spotsState.status,
+              totalOfUs: state.spotsState.totalOfUs,
+              totalByUs: state.spotsState.totalByUs,
+              stats: state.spotsState.stats
+            })
+          );
+
+          await runtime.loadRbnForCurrentLog(state);
+          add(
+            'loadRbnForCurrentLog normalizes RBN rows and computes matched DX stats',
+            state.rbnState.status === 'ready'
+              && state.rbnState.raw?.ofUsSpots?.[0]?.band === '20M'
+              && state.rbnState.raw?.byUsSpots?.[0]?.comment?.includes('SNR 20 dB')
+              && state.rbnState.stats?.byUsMatchedDx === 1,
+            JSON.stringify({
+              status: state.rbnState.status,
+              band: state.rbnState.raw?.ofUsSpots?.[0]?.band,
+              comment: state.rbnState.raw?.byUsSpots?.[0]?.comment,
+              stats: state.rbnState.stats
+            })
+          );
+        } finally {
+          globalThis.fetch = originalFetch;
+        }
+
+        add(
+          'Spots loaders notify the UI hooks',
+          renderCalls.length >= 4 && dataStatusCalls.length >= 4 && fetchCalls.some((url) => url.startsWith('https://spots.example.test/')) && fetchCalls.some((url) => url.startsWith('https://rbn.example.test/query')),
+          JSON.stringify({ renderCalls: renderCalls.length, dataStatusCalls: dataStatusCalls.length, fetchCalls })
+        );
+
+        const ok = checks.every((entry) => entry.ok);
+        setResult(ok, {
+          checks,
+          spotDays,
+          selectedDays,
+          spotStatus: state.spotsState.status,
+          rbnStatus: state.rbnState.status,
+          renderCalls: renderCalls.length,
+          dataStatusCalls: dataStatusCalls.length
+        });
+      } catch (err) {
+        add('Smoke test execution completed', false, err && err.message ? err.message : String(err));
+        setResult(false, {
+          error: err && err.stack ? err.stack : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
