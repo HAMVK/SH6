@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spots Coach Summary Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>Spots Coach Summary Runtime Smoke</h1>
+  <p>Checks the extracted spots coach summary runtime for reliability ranking, missed mult detection, best-window ranking, and rendered coach cards.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      try {
+        const [mainSource, moduleSource, coachSummaryModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/spots/coach-summary-runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/spots/coach-summary-runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/spots/coach-summary-runtime.js')
+        ]);
+
+        add('Main.js imports the spots coach summary runtime module', mainSource.includes("const SPOTS_COACH_SUMMARY_RUNTIME_MODULE_URL = './modules/spots/coach-summary-runtime.js?v=6.1.21';"));
+        add('Main.js preloads the spots coach summary runtime during init', mainSource.includes('const spotsCoachSummaryRuntimeReady = loadSpotsCoachSummaryRuntimeModule();') && mainSource.includes('await spotsCoachSummaryRuntimeReady;'));
+        add(
+          'Main.js delegates the coach summary helpers to the extracted runtime',
+          mainSource.includes("const computeSpotterReliabilityEntries = (spots, minSpots = 3) => getSpotsCoachSummaryRuntime().computeSpotterReliabilityEntries(spots, minSpots);")
+            && mainSource.includes("const buildMissedMultEntries = (spots, analysis) => getSpotsCoachSummaryRuntime().buildMissedMultEntries(spots, analysis);")
+            && mainSource.includes("const renderSpotsCoachCards = (statsData, analysis) => getSpotsCoachSummaryRuntime().renderSpotsCoachCards({"),
+          'Missing main.js delegation wrappers'
+        );
+        add('Spots coach summary runtime exports the factory', moduleSource.includes('export function createSpotsCoachSummaryRuntime'));
+
+        const prefixMap = new Map([
+          ['JA1AAA', { country: 'Japan' }],
+          ['DL1AAA', { country: 'Germany' }],
+          ['K1AAA', { country: 'United States' }]
+        ]);
+        const runtime = coachSummaryModule.createSpotsCoachSummaryRuntime({
+          lookupPrefix: (call) => prefixMap.get(String(call || '').trim().toUpperCase()) || null,
+          normalizeBandToken: (value) => String(value || '').trim().toUpperCase(),
+          bandOrderIndex: (value) => ({ '10M': 0, '15M': 1, '20M': 2, '40M': 3 }[String(value || '').trim().toUpperCase()] ?? 99),
+          escapeHtml: (value) => String(value == null ? '' : value),
+          escapeAttr: (value) => String(value == null ? '' : value),
+          formatBandLabel: (value) => String(value || '').trim().toUpperCase(),
+          formatNumberSh6: (value) => String(value),
+          coachSeverityLabel: (value) => String(value || '').trim().toUpperCase()
+        });
+
+        const reliabilityEntries = runtime.computeSpotterReliabilityEntries([
+          { spotter: 'W3LPL', matched: true },
+          { spotter: 'W3LPL', matched: true },
+          { spotter: 'W3LPL', matched: true },
+          { spotter: 'W3LPL', matched: false },
+          { spotter: 'K1TTT', matched: true },
+          { spotter: 'K1TTT', matched: false },
+          { spotter: 'K1TTT', matched: false },
+          { spotter: 'K1TTT', matched: false },
+          { spotter: 'N0CALL', matched: true },
+          { spotter: 'N0CALL', matched: true },
+          { spotter: 'N0CALL', matched: true }
+        ], 4);
+        add(
+          'computeSpotterReliabilityEntries filters by sample size and sorts by conversion then sample size',
+          reliabilityEntries.length === 2
+            && reliabilityEntries[0].spotter === 'W3LPL'
+            && Math.abs(reliabilityEntries[0].pct - 75) < 0.001
+            && reliabilityEntries[1].spotter === 'K1TTT'
+            && Math.abs(reliabilityEntries[1].pct - 25) < 0.001,
+          JSON.stringify(reliabilityEntries)
+        );
+
+        const analysis = {
+          firstCountryTime: new Map([
+            ['Japan', Date.UTC(2025, 10, 16, 11, 0, 0)],
+            ['Germany', Date.UTC(2025, 10, 16, 8, 0, 0)]
+          ])
+        };
+        const missedMults = runtime.buildMissedMultEntries([
+          { ts: Date.UTC(2025, 10, 16, 9, 30, 0), band: '20M', dxCall: 'JA1AAA', matchedDx: false },
+          { ts: Date.UTC(2025, 10, 16, 10, 30, 0), band: '20M', dxCall: 'DL1AAA', matchedDx: false },
+          { ts: Date.UTC(2025, 10, 16, 12, 30, 0), band: '20M', dxCall: 'JA1AAA', matchedDx: true },
+          { ts: Date.UTC(2025, 10, 16, 12, 45, 0), band: '15M', dxCall: 'K1AAA', matchedDx: false }
+        ], analysis);
+        add(
+          'buildMissedMultEntries keeps unmatched new-country candidates and skips already-worked or unknown countries',
+          missedMults.length === 2
+            && missedMults[0].country === 'Japan'
+            && missedMults[0].dx === 'JA1AAA'
+            && missedMults[1].country === 'United States'
+            && missedMults[1].dx === 'K1AAA',
+          JSON.stringify(missedMults)
+        );
+
+        const bestWindows = runtime.buildBestBandHourWindows([
+          { ts: Date.UTC(2025, 10, 16, 9, 0, 0), band: '20M', matched: true },
+          { ts: Date.UTC(2025, 10, 16, 9, 10, 0), band: '20M', matched: true },
+          { ts: Date.UTC(2025, 10, 16, 9, 20, 0), band: '20M', matched: true },
+          { ts: Date.UTC(2025, 10, 16, 9, 30, 0), band: '20M', matched: false },
+          { ts: Date.UTC(2025, 10, 16, 8, 0, 0), band: '40M', matched: true },
+          { ts: Date.UTC(2025, 10, 16, 8, 10, 0), band: '40M', matched: true },
+          { ts: Date.UTC(2025, 10, 16, 8, 20, 0), band: '40M', matched: false },
+          { ts: Date.UTC(2025, 10, 16, 8, 30, 0), band: '40M', matched: false },
+          { ts: Date.UTC(2025, 10, 16, 12, 0, 0), band: '15M', matched: true },
+          { ts: Date.UTC(2025, 10, 16, 12, 10, 0), band: '15M', matched: true }
+        ], 3);
+        add(
+          'buildBestBandHourWindows ranks windows by matched count and conversion and enforces the 3-spot floor',
+          bestWindows.length === 2
+            && bestWindows[0].band === '20M'
+            && bestWindows[0].hour === 9
+            && bestWindows[0].matched === 3
+            && bestWindows[1].band === '40M'
+            && bestWindows[1].hour === 8,
+          JSON.stringify(bestWindows)
+        );
+
+        add(
+          'estimateWindowConfidence uses the expected thresholds',
+          runtime.estimateWindowConfidence(8) === 'low'
+            && runtime.estimateWindowConfidence(12) === 'medium'
+            && runtime.estimateWindowConfidence(30) === 'high'
+        );
+
+        const coachCardsHtml = runtime.renderSpotsCoachCards({
+          statsData: {
+            ofUsSpots: [
+              { ts: Date.UTC(2025, 10, 16, 9, 0, 0), band: '20M', matched: true, spotter: 'W3LPL' },
+              { ts: Date.UTC(2025, 10, 16, 9, 10, 0), band: '20M', matched: true, spotter: 'W3LPL' },
+              { ts: Date.UTC(2025, 10, 16, 9, 20, 0), band: '20M', matched: true, spotter: 'W3LPL' },
+              { ts: Date.UTC(2025, 10, 16, 9, 30, 0), band: '20M', matched: false, spotter: 'W3LPL' },
+              { ts: Date.UTC(2025, 10, 16, 8, 0, 0), band: '40M', matched: true, spotter: 'K1TTT' },
+              { ts: Date.UTC(2025, 10, 16, 8, 10, 0), band: '40M', matched: false, spotter: 'K1TTT' },
+              { ts: Date.UTC(2025, 10, 16, 8, 20, 0), band: '40M', matched: false, spotter: 'K1TTT' },
+              { ts: Date.UTC(2025, 10, 16, 8, 30, 0), band: '40M', matched: false, spotter: 'K1TTT' }
+            ],
+            byUsSpots: [
+              { ts: Date.UTC(2025, 10, 16, 9, 30, 0), band: '20M', dxCall: 'JA1AAA', matchedDx: false },
+              { ts: Date.UTC(2025, 10, 16, 9, 35, 0), band: '20M', dxCall: 'JA1AAA', matchedDx: false },
+              { ts: Date.UTC(2025, 10, 16, 10, 30, 0), band: '20M', dxCall: 'DL1AAA', matchedDx: false }
+            ]
+          },
+          analysis,
+          sourceAttr: 'spots',
+          slotAttr: 'A',
+          sectionIds: {
+            bandHour: 'spots-band-hour-A',
+            topSpotters: 'spots-top-spotters-A',
+            missedMults: 'spots-missed-mults-A'
+          }
+        });
+        add(
+          'renderSpotsCoachCards renders the three coach cards with severity labels and jump targets',
+          coachCardsHtml.includes('Best hour/band windows')
+            && coachCardsHtml.includes('Spotter reliability leaders')
+            && coachCardsHtml.includes('Missed multiplier opportunities')
+            && coachCardsHtml.includes('data-target="spots-band-hour-A"')
+            && coachCardsHtml.includes('data-target="spots-top-spotters-A"')
+            && coachCardsHtml.includes('data-target="spots-missed-mults-A"')
+            && coachCardsHtml.includes('20M 09:00Z')
+            && coachCardsHtml.includes('W3LPL')
+            && coachCardsHtml.includes('Japan')
+            && coachCardsHtml.includes('OPPORTUNITY')
+            && coachCardsHtml.includes('HIGH'),
+          coachCardsHtml
+        );
+
+        const ok = checks.every((entry) => entry.ok);
+        setResult(ok, { checks });
+      } catch (err) {
+        add('Smoke test execution completed', false, err && err.message ? err.message : String(err));
+        setResult(false, {
+          error: err && err.stack ? err.stack : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

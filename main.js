@@ -200,6 +200,7 @@
   const RBN_SIGNAL_EXPORT_RUNTIME_MODULE_URL = './modules/spots/signal-export-runtime.js?v=6.1.21';
   const SPOTS_COMPARE_RUNTIME_MODULE_URL = './modules/spots/compare-runtime.js?v=6.1.21';
   const SPOTS_DRILLDOWN_RUNTIME_MODULE_URL = './modules/spots/drilldown-runtime.js?v=6.1.21';
+  const SPOTS_COACH_SUMMARY_RUNTIME_MODULE_URL = './modules/spots/coach-summary-runtime.js?v=6.1.21';
   const SPOTS_DATA_RUNTIME_MODULE_URL = './modules/spots/data-runtime.js?v=6.1.21';
   const SPOTS_ACTIONS_RUNTIME_MODULE_URL = './modules/spots/actions-runtime.js?v=6.1.21';
   const RBN_COMPARE_CHART_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-chart-runtime.js?v=6.1.21';
@@ -1308,6 +1309,8 @@
   let spotsCompareRuntime = null;
   let spotsDrilldownRuntimeModulePromise = null;
   let spotsDrilldownRuntime = null;
+  let spotsCoachSummaryRuntimeModulePromise = null;
+  let spotsCoachSummaryRuntime = null;
   let spotsDataRuntimeModulePromise = null;
   let spotsDataRuntime = null;
   let spotsActionsRuntimeModulePromise = null;
@@ -1984,6 +1987,36 @@
       throw new Error('spots drilldown runtime not loaded');
     }
     return spotsDrilldownRuntime;
+  }
+
+  function loadSpotsCoachSummaryRuntimeModule() {
+    if (!spotsCoachSummaryRuntimeModulePromise) {
+      spotsCoachSummaryRuntimeModulePromise = import(SPOTS_COACH_SUMMARY_RUNTIME_MODULE_URL)
+        .then((mod) => {
+          if (!mod || typeof mod.createSpotsCoachSummaryRuntime !== 'function') {
+            throw new Error('spots coach summary runtime module unavailable');
+          }
+          spotsCoachSummaryRuntime = mod.createSpotsCoachSummaryRuntime({
+            lookupPrefix,
+            normalizeBandToken,
+            bandOrderIndex,
+            escapeHtml,
+            escapeAttr,
+            formatBandLabel,
+            formatNumberSh6,
+            coachSeverityLabel
+          });
+          return spotsCoachSummaryRuntime;
+        });
+    }
+    return spotsCoachSummaryRuntimeModulePromise;
+  }
+
+  function getSpotsCoachSummaryRuntime() {
+    if (!spotsCoachSummaryRuntime) {
+      throw new Error('spots coach summary runtime not loaded');
+    }
+    return spotsCoachSummaryRuntime;
   }
 
   function loadSpotsDataRuntimeModule() {
@@ -11087,74 +11120,9 @@
         </table>
       `;
     };
-    const computeSpotterReliabilityEntries = (spots, minSpots = 3) => {
-      if (!spots || !spots.length) return [];
-      const map = new Map();
-      spots.forEach((s) => {
-        if (!map.has(s.spotter)) map.set(s.spotter, { spotter: s.spotter, spots: 0, matched: 0 });
-        const entry = map.get(s.spotter);
-        entry.spots += 1;
-        if (s.matched) entry.matched += 1;
-      });
-      return Array.from(map.values())
-        .filter((e) => e.spots >= minSpots)
-        .map((e) => ({ ...e, pct: e.spots ? (e.matched / e.spots) * 100 : 0 }))
-        .sort((a, b) => b.pct - a.pct || b.spots - a.spots);
-    };
+    const computeSpotterReliabilityEntries = (spots, minSpots = 3) => getSpotsCoachSummaryRuntime().computeSpotterReliabilityEntries(spots, minSpots);
 
-    const buildMissedMultEntries = (spots, analysis) => {
-      if (!spots || !spots.length) return [];
-      const missed = [];
-      spots.forEach((s) => {
-        if (s.matchedDx) return;
-        const prefix = lookupPrefix(s.dxCall || '');
-        const country = prefix?.country || '';
-        if (!country) return;
-        const first = analysis.firstCountryTime.get(country);
-        if (first != null && first < s.ts) return;
-        missed.push({
-          ts: s.ts,
-          band: s.band,
-          dx: s.dxCall,
-          country
-        });
-      });
-      return missed;
-    };
-
-    const buildBestBandHourWindows = (spots, limit = 3) => {
-      if (!spots || !spots.length) return [];
-      const map = new Map();
-      spots.forEach((spot) => {
-        if (!Number.isFinite(spot.ts)) return;
-        const band = normalizeBandToken(spot.band || '') || 'unknown';
-        const hour = new Date(spot.ts).getUTCHours();
-        const key = `${band}|${hour}`;
-        if (!map.has(key)) map.set(key, { band, hour, spots: 0, matched: 0 });
-        const entry = map.get(key);
-        entry.spots += 1;
-        if (spot.matched) entry.matched += 1;
-      });
-      return Array.from(map.values())
-        .map((entry) => ({
-          ...entry,
-          conv: entry.spots ? (entry.matched / entry.spots) * 100 : 0
-        }))
-        .filter((entry) => entry.spots >= 3)
-        .sort((a, b) => {
-          if (b.matched !== a.matched) return b.matched - a.matched;
-          if (b.conv !== a.conv) return b.conv - a.conv;
-          if (b.spots !== a.spots) return b.spots - a.spots;
-          return bandOrderIndex(a.band) - bandOrderIndex(b.band);
-        })
-        .slice(0, Math.max(1, Math.min(5, Number(limit) || 3)));
-    };
-
-    const estimateWindowConfidence = (spots) => {
-      if (spots >= 30) return 'high';
-      if (spots >= 12) return 'medium';
-      return 'low';
-    };
+    const buildMissedMultEntries = (spots, analysis) => getSpotsCoachSummaryRuntime().buildMissedMultEntries(spots, analysis);
 
     const renderSpotterReliabilityTable = (spots) => {
       const entries = computeSpotterReliabilityEntries(spots, 3);
@@ -11468,84 +11436,13 @@
       `;
     };
 
-    const renderSpotsCoachCards = (statsData, analysis) => {
-      if (!statsData || !analysis) return '';
-
-      const bestWindows = buildBestBandHourWindows(statsData.ofUsSpots || [], 3);
-      const bestWindowRows = bestWindows.length
-        ? bestWindows.map((entry) => {
-          const hour = String(entry.hour).padStart(2, '0');
-          const conv = Number.isFinite(entry.conv) ? `${entry.conv.toFixed(1)}%` : 'N/A';
-          return `<li><b>${escapeHtml(formatBandLabel(entry.band || ''))} ${hour}:00Z</b> · ${formatNumberSh6(entry.matched)}/${formatNumberSh6(entry.spots)} matched (${conv})</li>`;
-        }).join('')
-        : '<li>No strong hour/band window found yet. Try broader band filters.</li>';
-      const confidenceSpots = bestWindows.reduce((sum, entry) => sum + (Number(entry.spots) || 0), 0);
-      const confidenceLabel = estimateWindowConfidence(confidenceSpots);
-      const confidenceText = confidenceLabel === 'high'
-        ? 'high confidence'
-        : (confidenceLabel === 'medium' ? 'medium confidence' : 'low confidence');
-      const windowSeverity = confidenceLabel === 'low'
-        ? 'high'
-        : (confidenceLabel === 'medium' ? 'medium' : 'opportunity');
-
-      const reliableSpotters = computeSpotterReliabilityEntries(statsData.ofUsSpots || [], 4).slice(0, 3);
-      const reliableRows = reliableSpotters.length
-        ? reliableSpotters.map((entry) => `<li><b>${escapeHtml(entry.spotter || '')}</b> · ${entry.pct.toFixed(1)}% conversion (${formatNumberSh6(entry.matched)}/${formatNumberSh6(entry.spots)})</li>`).join('')
-        : '<li>No spotter with enough sample size yet (need at least 4 spots).</li>';
-      const topReliabilityPct = Number(reliableSpotters?.[0]?.pct || 0);
-      const reliabilitySeverity = !reliableSpotters.length
-        ? 'medium'
-        : (topReliabilityPct < 35 ? 'medium' : 'opportunity');
-
-      const missedMults = buildMissedMultEntries(statsData.byUsSpots || [], analysis);
-      const topMissedCountries = Array.from(missedMults.reduce((map, entry) => {
-        const key = String(entry.country || '').trim();
-        if (!key) return map;
-        map.set(key, (map.get(key) || 0) + 1);
-        return map;
-      }, new Map()).entries())
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 3);
-      const missedRows = topMissedCountries.length
-        ? topMissedCountries.map(([country, count]) => `<li><b>${escapeHtml(country)}</b> · ${formatNumberSh6(count)} potential mult misses</li>`).join('')
-        : '<li>No clear missed multiplier concentration detected.</li>';
-      const missedTotalText = missedMults.length ? formatNumberSh6(missedMults.length) : '0';
-      const missedSeverity = missedMults.length >= 25
-        ? 'high'
-        : (missedMults.length >= 10 ? 'medium' : (missedMults.length > 0 ? 'opportunity' : 'info'));
-
-      return `
-        <div class="spots-coach-grid">
-          <article class="spots-coach-card">
-            <div class="spots-coach-head">
-              <h4>Best hour/band windows</h4>
-              <span class="coach-severity-badge coach-severity-${windowSeverity}">${coachSeverityLabel(windowSeverity)}</span>
-            </div>
-            <p class="spots-coach-note">Top match windows from your current band filter (${confidenceText}; ${formatNumberSh6(confidenceSpots)} spots sampled).</p>
-            <ul class="spots-coach-list">${bestWindowRows}</ul>
-            <button type="button" class="spots-coach-action" data-source="${sourceAttr}" data-slot="${slotAttr}" data-target="${escapeAttr(sectionIds.bandHour)}">Jump to band/hour table</button>
-          </article>
-          <article class="spots-coach-card">
-            <div class="spots-coach-head">
-              <h4>Spotter reliability leaders</h4>
-              <span class="coach-severity-badge coach-severity-${reliabilitySeverity}">${coachSeverityLabel(reliabilitySeverity)}</span>
-            </div>
-            <p class="spots-coach-note">Spotters with the best QSO conversion for your station.</p>
-            <ul class="spots-coach-list">${reliableRows}</ul>
-            <button type="button" class="spots-coach-action" data-source="${sourceAttr}" data-slot="${slotAttr}" data-target="${escapeAttr(sectionIds.topSpotters)}">Jump to top spotters</button>
-          </article>
-          <article class="spots-coach-card">
-            <div class="spots-coach-head">
-              <h4>Missed multiplier opportunities</h4>
-              <span class="coach-severity-badge coach-severity-${missedSeverity}">${coachSeverityLabel(missedSeverity)}</span>
-            </div>
-            <p class="spots-coach-note">Raw candidates: ${missedTotalText}. Focus first on these repeat countries.</p>
-            <ul class="spots-coach-list">${missedRows}</ul>
-            <button type="button" class="spots-coach-action" data-source="${sourceAttr}" data-slot="${slotAttr}" data-target="${escapeAttr(sectionIds.missedMults)}">Jump to missed mult table</button>
-          </article>
-        </div>
-      `;
-    };
+    const renderSpotsCoachCards = (statsData, analysis) => getSpotsCoachSummaryRuntime().renderSpotsCoachCards({
+      statsData,
+      analysis,
+      sourceAttr,
+      slotAttr,
+      sectionIds
+    });
 
     const renderSpotBucketDetail = (spots) => getSpotsDrilldownRuntime().renderSpotBucketDetail({
       spots,
@@ -17419,6 +17316,7 @@
     const rbnSignalExportRuntimeReady = loadRbnSignalExportRuntimeModule();
     const spotsCompareRuntimeReady = loadSpotsCompareRuntimeModule();
     const spotsDrilldownRuntimeReady = loadSpotsDrilldownRuntimeModule();
+    const spotsCoachSummaryRuntimeReady = loadSpotsCoachSummaryRuntimeModule();
     const spotsDataRuntimeReady = loadSpotsDataRuntimeModule();
     const spotsActionsRuntimeReady = loadSpotsActionsRuntimeModule();
     const rbnCompareChartRuntimeReady = loadRbnCompareChartRuntimeModule();
@@ -17442,6 +17340,7 @@
     await rbnSignalExportRuntimeReady;
     await spotsCompareRuntimeReady;
     await spotsDrilldownRuntimeReady;
+    await spotsCoachSummaryRuntimeReady;
     await spotsDataRuntimeReady;
     await spotsActionsRuntimeReady;
     await rbnCompareChartRuntimeReady;
