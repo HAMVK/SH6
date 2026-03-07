@@ -196,6 +196,7 @@
   const LOAD_PANEL_RUNTIME_MODULE_URL = './modules/ui/load-panel-runtime.js?v=6.1.21';
   const ANALYSIS_CONTROLS_RUNTIME_MODULE_URL = './modules/ui/analysis-controls-runtime.js?v=6.1.21';
   const COACH_RUNTIME_MODULE_URL = './modules/coach/runtime.js?v=6.1.21';
+  const INVESTIGATION_ACTIONS_RUNTIME_MODULE_URL = './modules/ui/investigation-actions-runtime.js?v=6.1.21';
   const INVESTIGATION_WORKSPACE_MODULE_URL = './modules/reports/investigation-workspace.js?v=6.1.21';
   const SESSION_CODEC_MODULE_URL = './modules/session/codec.js?v=6.1.21';
   const SESSION_PERSPECTIVES_MODULE_URL = './modules/session/perspectives.js?v=6.1.21';
@@ -1292,6 +1293,8 @@
   let analysisControlsRuntime = null;
   let coachRuntimeModulePromise = null;
   let coachRuntime = null;
+  let investigationActionsRuntimeModulePromise = null;
+  let investigationActionsRuntime = null;
   let investigationWorkspaceModulePromise = null;
   let investigationWorkspaceRenderer = null;
   let sessionCodecModulePromise = null;
@@ -1829,6 +1832,44 @@
       throw new Error('coach runtime not loaded');
     }
     return coachRuntime;
+  }
+
+  function loadInvestigationActionsRuntimeModule() {
+    if (!investigationActionsRuntimeModulePromise) {
+      investigationActionsRuntimeModulePromise = import(INVESTIGATION_ACTIONS_RUNTIME_MODULE_URL)
+        .then((mod) => {
+          if (!mod || typeof mod.createInvestigationActionsRuntime !== 'function') {
+            throw new Error('investigation actions runtime unavailable');
+          }
+          investigationActionsRuntime = mod.createInvestigationActionsRuntime({
+            getState: () => state,
+            getActiveReportId: () => reports[state.activeIndex]?.id || '',
+            createAgentBriefingState,
+            createCompetitorCoachState,
+            normalizeCoachScopeType,
+            triggerCompetitorCoachRefresh,
+            setActiveReportById,
+            getAgentBriefingActionById,
+            handleAgentBriefingAction,
+            showOverlayNotice,
+            trackEvent,
+            loadCqApiHistoryArchiveToSlot,
+            buildCoachRowKey,
+            renderCurrentReportWithLoading: () => renderReportWithLoading(reports[state.activeIndex]),
+            renderActiveReport,
+            normalizeCall
+          });
+          return investigationActionsRuntime;
+        });
+    }
+    return investigationActionsRuntimeModulePromise;
+  }
+
+  function getInvestigationActionsRuntime() {
+    if (!investigationActionsRuntime) {
+      throw new Error('investigation actions runtime not loaded');
+    }
+    return investigationActionsRuntime;
   }
 
   function loadInvestigationWorkspaceModule() {
@@ -18059,91 +18100,7 @@
           });
         });
     }
-    if (reportId === 'agent_briefing') {
-      const navButtons = document.querySelectorAll('.agent-action-btn[data-report]');
-      const actionButtons = document.querySelectorAll('.agent-action-btn[data-agent-action-id]');
-      const refreshButtons = document.querySelectorAll('.agent-refresh-btn[data-agent-refresh]');
-      navButtons.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          const target = String(btn.dataset.report || '').trim();
-          if (!target) return;
-          setActiveReportById(target);
-        });
-      });
-      actionButtons.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          const actionId = String(btn.dataset.agentActionId || '').trim();
-          if (!actionId) return;
-          const action = getAgentBriefingActionById(actionId);
-          handleAgentBriefingAction(action);
-        });
-      });
-      refreshButtons.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          state.agentBriefing = createAgentBriefingState();
-          renderReportWithLoading(reports[state.activeIndex]);
-        });
-      });
-    }
-    if (reportId === 'competitor_coach') {
-      const scopeButtons = document.querySelectorAll('.coach-scope-btn');
-      const categoryButtons = document.querySelectorAll('.coach-category-btn');
-      const navButtons = document.querySelectorAll('.coach-brief-nav');
-
-      const setActiveChoice = (buttons, predicate) => {
-        buttons.forEach((btn) => {
-          const active = Boolean(predicate(btn));
-          btn.classList.toggle('active', active);
-          btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-        });
-      };
-
-      const syncCoachControls = () => {
-        state.competitorCoach = state.competitorCoach || createCompetitorCoachState();
-        const activeScope = Array.from(scopeButtons).find((btn) => btn.classList.contains('active'));
-        const activeCategory = Array.from(categoryButtons).find((btn) => btn.classList.contains('active'));
-        if (activeScope) state.competitorCoach.scopeType = normalizeCoachScopeType(activeScope.dataset.scope || '');
-        if (activeCategory) state.competitorCoach.categoryMode = activeCategory.dataset.categoryMode === 'all' ? 'all' : 'same';
-      };
-
-      scopeButtons.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          if (btn.disabled) return;
-          const nextScope = btn.dataset.scope || '';
-          setActiveChoice(scopeButtons, (item) => item.dataset.scope === nextScope);
-          syncCoachControls();
-          triggerCompetitorCoachRefresh(true);
-        });
-      });
-
-      categoryButtons.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          if (btn.disabled) return;
-          const nextMode = btn.dataset.categoryMode || 'same';
-          setActiveChoice(categoryButtons, (item) => (item.dataset.categoryMode || 'same') === nextMode);
-          syncCoachControls();
-          triggerCompetitorCoachRefresh(true);
-        });
-      });
-
-      navButtons.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          const target = String(btn.dataset.report || '').trim();
-          if (!target) return;
-          setActiveReportById(target);
-        });
-      });
-
-      if (state.competitorCoach?.status === 'idle') {
-        triggerCompetitorCoachRefresh(false);
-      }
-    }
+    getInvestigationActionsRuntime().bindInvestigationActions(reportId);
     if (reportId === 'not_in_master') {
       const buttons = document.querySelectorAll('.not-master-btn');
       buttons.forEach((btn) => {
@@ -18912,101 +18869,6 @@
         });
       });
     }
-
-    const cqApiLoadButtons = document.querySelectorAll('.cqapi-load-btn');
-    cqApiLoadButtons.forEach((btn) => {
-      btn.addEventListener('click', async (evt) => {
-        evt.preventDefault();
-        if (btn.disabled) return;
-        const slotId = String(btn.dataset.slot || '').toUpperCase();
-        const year = Number(btn.dataset.year);
-        const callsign = normalizeCall(btn.dataset.callsign || '');
-        const contestId = String(btn.dataset.contest || '').trim().toUpperCase();
-        const mode = String(btn.dataset.mode || '').trim().toLowerCase();
-        if (!slotId || !Number.isFinite(year) || !callsign || !contestId || !mode) {
-          showOverlayNotice('Missing CQ API load details for this row.', 2500);
-          return;
-        }
-
-        const originalText = btn.textContent;
-        btn.disabled = true;
-        btn.classList.add('is-loading');
-        btn.textContent = '...';
-
-        trackEvent('cqapi_compare_load_click', {
-          slot: slotId,
-          callsign,
-          contest: contestId,
-          mode,
-          year
-        });
-
-        try {
-          const result = await loadCqApiHistoryArchiveToSlot({
-            slotId,
-            callsign,
-            contestId,
-            mode,
-            year
-          });
-          if (btn.classList.contains('coach-load-btn')) {
-            const rowKey = String(btn.dataset.rowKey || '').trim()
-              || buildCoachRowKey({ callsign, year, contestId, mode });
-            if (rowKey) {
-              const coach = state.competitorCoach || createCompetitorCoachState();
-              const nextLoadedSlots = { ...(coach.loadedSlotRows || {}) };
-              nextLoadedSlots[slotId] = rowKey;
-              state.competitorCoach = {
-                ...coach,
-                loadedSlotRows: nextLoadedSlots,
-                lastLoadedSlot: slotId,
-                lastLoadedRowKey: rowKey
-              };
-            }
-          }
-          btn.classList.remove('is-loading');
-          btn.classList.add('is-ok');
-          btn.textContent = 'OK';
-          showOverlayNotice(`Loaded ${callsign} ${contestId} ${year} into Log ${slotId}.`, 2200);
-          trackEvent('cqapi_compare_load_success', {
-            slot: slotId,
-            callsign,
-            contest: contestId,
-            mode,
-            year,
-            path: result.path || ''
-          });
-          if (btn.classList.contains('coach-load-btn') && reports[state.activeIndex]?.id === 'competitor_coach') {
-            renderActiveReport();
-            return;
-          }
-          setTimeout(() => {
-            btn.textContent = originalText;
-            btn.classList.remove('is-ok');
-            btn.disabled = false;
-          }, 900);
-        } catch (err) {
-          const message = err && err.message ? err.message : 'Unable to load archive log';
-          btn.classList.remove('is-loading');
-          btn.classList.add('is-error');
-          btn.textContent = 'ERR';
-          showOverlayNotice(message, 3200);
-          trackEvent('cqapi_compare_load_error', {
-            slot: slotId,
-            callsign,
-            contest: contestId,
-            mode,
-            year,
-            message
-          });
-          setTimeout(() => {
-            btn.textContent = originalText;
-            btn.classList.remove('is-error');
-            btn.disabled = false;
-          }, 1200);
-        }
-      });
-    });
 
     const rangeLinks = document.querySelectorAll('.log-range');
     rangeLinks.forEach((link) => {
@@ -19799,6 +19661,7 @@
     const loadPanelRuntimeReady = loadLoadPanelRuntimeModule();
     const analysisControlsRuntimeReady = loadAnalysisControlsRuntimeModule();
     const coachRuntimeReady = loadCoachRuntimeModule();
+    const investigationActionsRuntimeReady = loadInvestigationActionsRuntimeModule();
     const investigationWorkspaceReady = loadInvestigationWorkspaceModule();
     const sessionCodecReady = loadSessionCodecModule();
     const comparePerspectiveReady = loadComparePerspectiveModule();
@@ -19811,6 +19674,7 @@
     await loadPanelRuntimeReady;
     await analysisControlsRuntimeReady;
     await coachRuntimeReady;
+    await investigationActionsRuntimeReady;
     setupNavSearch();
     rebuildReports();
     setupFileInput(dom.fileInput, dom.fileStatus, 'A');

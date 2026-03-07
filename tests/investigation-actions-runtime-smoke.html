@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Investigation Actions Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>Investigation Actions Runtime Smoke</h1>
+  <p>Checks the extracted report-action runtime for agent briefing, competitor coach, and CQ API compare-load interactions.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      try {
+        const [mainSource, moduleSource, actionsModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/ui/investigation-actions-runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/ui/investigation-actions-runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/ui/investigation-actions-runtime.js')
+        ]);
+
+        add('Main.js imports the investigation actions runtime module', mainSource.includes("const INVESTIGATION_ACTIONS_RUNTIME_MODULE_URL = './modules/ui/investigation-actions-runtime.js?v=6.1.21';"));
+        add('Main.js preloads the investigation actions runtime during init', mainSource.includes('const investigationActionsRuntimeReady = loadInvestigationActionsRuntimeModule();') && mainSource.includes('await investigationActionsRuntimeReady;'));
+        add('Main.js delegates investigation action binding to the runtime', mainSource.includes("getInvestigationActionsRuntime().bindInvestigationActions(reportId);"));
+        add('Investigation actions runtime exports the factory', moduleSource.includes('export function createInvestigationActionsRuntime'));
+
+        const root = document.createElement('div');
+        root.innerHTML = `
+          <button class="agent-action-btn" data-report="summary">Summary</button>
+          <button class="agent-action-btn" data-agent-action-id="f0-a0">Action</button>
+          <button class="agent-action-btn agent-refresh-btn" data-agent-refresh="1">Refresh</button>
+
+          <button class="coach-scope-btn active" data-scope="continent" aria-pressed="true">Continent</button>
+          <button class="coach-scope-btn" data-scope="dxcc" aria-pressed="false">DXCC</button>
+          <button class="coach-category-btn active" data-category-mode="same" aria-pressed="true">Same</button>
+          <button class="coach-category-btn" data-category-mode="all" aria-pressed="false">All</button>
+          <button class="coach-brief-nav" data-report="spots">Open spots</button>
+
+          <button class="cqapi-load-btn coach-load-btn" data-slot="C" data-year="2025" data-callsign="S53M" data-contest="CQWW" data-mode="cw" data-row-key="S53M|2025|CQWW|cw">Load rival</button>
+        `;
+        document.body.appendChild(root);
+
+        const state = {
+          activeReportId: 'agent_briefing',
+          activeIndex: 0,
+          agentBriefing: { stale: true },
+          competitorCoach: {
+            status: 'idle',
+            loadedSlotRows: { A: '', B: '', C: '', D: '' },
+            lastLoadedSlot: '',
+            lastLoadedRowKey: ''
+          }
+        };
+        const navigations = [];
+        const actionIds = [];
+        const notices = [];
+        const events = [];
+        const refreshes = [];
+        const coachRefreshes = [];
+        const archiveLoads = [];
+        const rerenders = [];
+
+        const runtime = actionsModule.createInvestigationActionsRuntime({
+          getState: () => state,
+          getActiveReportId: () => state.activeReportId,
+          createAgentBriefingState: () => ({ refreshed: true }),
+          createCompetitorCoachState: () => ({
+            status: 'idle',
+            loadedSlotRows: { A: '', B: '', C: '', D: '' },
+            lastLoadedSlot: '',
+            lastLoadedRowKey: ''
+          }),
+          normalizeCoachScopeType: (value) => String(value || '').trim().toLowerCase(),
+          triggerCompetitorCoachRefresh: async (force) => {
+            coachRefreshes.push(force);
+            state.competitorCoach.status = 'ready';
+          },
+          setActiveReportById: (reportId) => navigations.push(reportId),
+          getAgentBriefingActionById: (actionId) => {
+            actionIds.push(actionId);
+            return { type: 'report', reportId: 'summary' };
+          },
+          handleAgentBriefingAction: (action) => {
+            if (action && action.reportId) navigations.push(`action:${action.reportId}`);
+          },
+          showOverlayNotice: (message) => notices.push(String(message)),
+          trackEvent: (name, payload) => events.push({ name, payload }),
+          loadCqApiHistoryArchiveToSlot: async (payload) => {
+            archiveLoads.push(payload);
+            return { path: 'CQWW/cw/2025/S53M.log' };
+          },
+          buildCoachRowKey: ({ callsign, year, contestId, mode }) => `${callsign}|${year}|${contestId}|${mode}`,
+          renderCurrentReportWithLoading: () => refreshes.push('loading'),
+          renderActiveReport: () => rerenders.push(state.activeReportId),
+          normalizeCall: (value) => String(value || '').trim().toUpperCase()
+        });
+
+        runtime.bindInvestigationActions('agent_briefing');
+
+        root.querySelector('.agent-action-btn[data-report]').click();
+        add('Agent briefing nav button routes through setActiveReportById', navigations.includes('summary'), JSON.stringify(navigations));
+
+        root.querySelector('.agent-action-btn[data-agent-action-id]').click();
+        add(
+          'Agent briefing action button resolves and handles action ids',
+          actionIds.includes('f0-a0') && navigations.includes('action:summary'),
+          JSON.stringify({ actionIds, navigations })
+        );
+
+        root.querySelector('.agent-refresh-btn').click();
+        add(
+          'Agent briefing refresh resets state and rerenders',
+          state.agentBriefing && state.agentBriefing.refreshed === true && refreshes.length === 1,
+          JSON.stringify({ agentBriefing: state.agentBriefing, refreshes })
+        );
+
+        state.activeReportId = 'competitor_coach';
+        state.competitorCoach.status = 'idle';
+        runtime.bindInvestigationActions('competitor_coach');
+        add('Competitor coach bind triggers initial refresh when idle', coachRefreshes.includes(false), JSON.stringify(coachRefreshes));
+
+        root.querySelector('.coach-scope-btn[data-scope="dxcc"]').click();
+        root.querySelector('.coach-category-btn[data-category-mode="all"]').click();
+        root.querySelector('.coach-brief-nav').click();
+        add(
+          'Competitor coach controls sync scope/category state and navigate',
+          state.competitorCoach.scopeType === 'dxcc'
+            && state.competitorCoach.categoryMode === 'all'
+            && coachRefreshes.includes(true)
+            && navigations.includes('spots'),
+          JSON.stringify({ competitorCoach: state.competitorCoach, coachRefreshes, navigations })
+        );
+
+        root.querySelector('.cqapi-load-btn').click();
+        await wait(20);
+        add(
+          'CQ API load buttons call archive load, track events, update coach slot state, and rerender',
+          archiveLoads.length === 1
+            && events.some((entry) => entry.name === 'cqapi_compare_load_click')
+            && events.some((entry) => entry.name === 'cqapi_compare_load_success')
+            && state.competitorCoach.loadedSlotRows.C === 'S53M|2025|CQWW|cw'
+            && state.competitorCoach.lastLoadedSlot === 'C'
+            && notices.some((entry) => entry.includes('Loaded S53M CQWW 2025 into Log C.'))
+            && rerenders.includes('competitor_coach'),
+          JSON.stringify({ archiveLoads, events, competitorCoach: state.competitorCoach, notices, rerenders })
+        );
+
+        setResult(checks.every((entry) => entry.ok), {
+          checksTotal: checks.length,
+          checksFailed: checks.filter((entry) => !entry.ok).length,
+          state,
+          navigations,
+          actionIds,
+          notices,
+          events,
+          refreshes,
+          coachRefreshes,
+          archiveLoads,
+          rerenders
+        });
+      } catch (err) {
+        add('Smoke execution completed', false, err && err.message ? err.message : String(err));
+        setResult(false, {
+          error: err && err.stack ? err.stack : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
