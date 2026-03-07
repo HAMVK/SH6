@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RBN Compare View Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h1>RBN Compare View Runtime Smoke</h1>
+  <p>Checks the extracted RBN compare view runtime for slot legends, compare offers, ranking cards, and main-thread delegation.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      function normalizeCall(value) {
+        return String(value || '').trim().toUpperCase().replace(/\s+/g, '');
+      }
+
+      function normalizeBandToken(value) {
+        return String(value || '').trim().toUpperCase();
+      }
+
+      function normalizeSpotterBase(value) {
+        return normalizeCall(value).replace(/-\d+$/, '');
+      }
+
+      function escapeHtml(value) {
+        return String(value || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function escapeAttr(value) {
+        return escapeHtml(value).replace(/"/g, '&quot;');
+      }
+
+      try {
+        const [mainSource, moduleSource, viewModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/spots/rbn-compare-view-runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/spots/rbn-compare-view-runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/spots/rbn-compare-view-runtime.js')
+        ]);
+
+        add('Main.js imports the RBN compare view runtime module', mainSource.includes("const RBN_COMPARE_VIEW_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-view-runtime.js?v=6.1.21';"));
+        add('Main.js preloads the RBN compare view runtime during init', mainSource.includes('const rbnCompareViewRuntimeReady = loadRbnCompareViewRuntimeModule();') && mainSource.includes('await rbnCompareViewRuntimeReady;'));
+        add(
+          'Main.js delegates slot legend helpers and report rendering to the view runtime',
+          mainSource.includes('return getRbnCompareViewRuntime().slotLegendMarkerSvg(slotId);')
+            && mainSource.includes('return getRbnCompareViewRuntime().slotLegendLineSvg(slotId);')
+            && mainSource.includes('return getRbnCompareViewRuntime().renderRbnCompareSignal();')
+        );
+        add('RBN compare view runtime exports the factory', moduleSource.includes('export function createRbnCompareViewRuntime'));
+
+        const state = {
+          qsoData: { qsos: [{}] },
+          derived: {
+            contestMeta: { stationCallsign: 'S55OO' },
+            timeRange: {
+              minTs: Date.UTC(2025, 10, 15, 22, 0, 0),
+              maxTs: Date.UTC(2025, 10, 17, 1, 0, 0)
+            }
+          },
+          globalBandFilter: '20m',
+          analysisMode: 'contester',
+          rbnCompareSignal: {
+            selectedByContinent: {
+              NA: 'W3LPL'
+            }
+          },
+          competitorCoach: {
+            contestId: 'CQWW',
+            mode: 'cw',
+            closestRivals: [
+              { callsign: 'N6MJ', year: 2025 },
+              { callsign: 'P3X', year: 2025 }
+            ]
+          },
+          cqApiClient: null
+        };
+
+        const baseSlot = {
+          qsoData: { qsos: [{}] },
+          derived: { contestMeta: { stationCallsign: 'S55OO' } },
+          rbnState: { status: 'ready' }
+        };
+        const compareSlot = {
+          qsoData: { qsos: [{}] },
+          derived: { contestMeta: { stationCallsign: 'N6MJ' } },
+          rbnState: { status: 'loading' }
+        };
+        const ranking = {
+          dataKey: 'demo',
+          byContinent: new Map([
+            ['NA', [{ spotter: 'W3LPL', count: 12 }, { spotter: 'K1TTT', count: 6 }]],
+            ['EU', [{ spotter: 'EI0A', count: 9 }]]
+          ])
+        };
+
+        const runtime = viewModule.createRbnCompareViewRuntime({
+          getState: () => state,
+          getActiveCompareSlots: () => [
+            { id: 'A', label: 'Log A', slot: baseSlot },
+            { id: 'B', label: 'Log B', slot: compareSlot }
+          ],
+          getSlotById: (slotId) => {
+            if (slotId === 'B') return compareSlot;
+            return null;
+          },
+          compareSlotIds: ['B', 'C', 'D'],
+          createCompetitorCoachState: () => ({ closestRivals: [] }),
+          buildCompetitorCoachContext: () => ({ contestId: 'CQWW', mode: 'cw' }),
+          normalizeCall,
+          normalizeBandToken,
+          formatBandLabel: (value) => String(value || '').trim().toUpperCase(),
+          escapeAttr,
+          escapeHtml,
+          mapSpotStatus: (value) => String(value || '').trim().toLowerCase(),
+          buildRbnDayList: () => ['20251115', '20251116', '20251117'],
+          getRbnCompareRankingCached: (slotId, slot, bandKey) => (slotId === 'A' && slot === baseSlot && bandKey === '20M' ? ranking : null),
+          continentLabel: (continent) => ({
+            NA: 'North America',
+            EU: 'Europe',
+            AF: 'Africa',
+            SA: 'South America',
+            AS: 'Asia',
+            OC: 'Oceania'
+          }[String(continent || '').trim().toUpperCase()] || String(continent || '').trim().toUpperCase()),
+          normalizeSpotterBase,
+          formatNumberSh6: (value) => String(Number(value || 0)),
+          renderReportIntroCard: (title, intro) => `<section class="report-intro"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(intro)}</p></section>`,
+          renderStateCard: (config) => `<section class="state-card"><h3>${escapeHtml(config.title || '')}</h3><p>${escapeHtml(config.message || '')}</p></section>`,
+          analysisModeDxer: 'dxer'
+        });
+
+        add(
+          'Slot marker and line helpers retain the expected visual encodings',
+          runtime.slotMarkerShape('D') === 'diamond'
+            && runtime.slotMarkerSymbol('A') === '●'
+            && runtime.slotLineStyleLabel('C') === 'dotted'
+            && runtime.slotLineStyleSample('D') === '-.-.-'
+            && runtime.slotLegendMarkerSvg('C').includes('<rect')
+            && runtime.slotLegendLineSvg('B').includes('stroke-dasharray="8 6"'),
+          JSON.stringify({
+            markerShapeD: runtime.slotMarkerShape('D'),
+            markerSymbolA: runtime.slotMarkerSymbol('A'),
+            lineLabelC: runtime.slotLineStyleLabel('C'),
+            lineSampleD: runtime.slotLineStyleSample('D')
+          })
+        );
+
+        const html = runtime.renderRbnCompareSignal();
+        add(
+          'renderRbnCompareSignal builds compare offers, warning copy, legend chips, and ranked continent cards',
+          html.includes('RBN compare signal')
+            && html.includes('Load N6MJ to Log C')
+            && html.includes('Load P3X to Log D')
+            && html.includes('Open Competitor coach')
+            && html.includes('North America top skimmer')
+            && html.includes('Europe top skimmer')
+            && html.includes('No RBN spots found for Africa.')
+            && html.includes('Log A RBN: ready')
+            && html.includes('Log B RBN: loading')
+            && html.includes('spans more than 2 UTC dates')
+            && html.includes('data-continent="NA"')
+            && html.includes('W3LPL (12)')
+            && html.includes('EI0A (9)'),
+          html
+        );
+
+        add(
+          'renderRbnCompareSignal preserves and seeds continent spotter selections',
+          state.rbnCompareSignal?.selectedByContinent?.NA === 'W3LPL'
+            && state.rbnCompareSignal?.selectedByContinent?.EU === 'EI0A',
+          JSON.stringify(state.rbnCompareSignal)
+        );
+
+        const ok = checks.every((entry) => entry.ok);
+        setResult(ok, {
+          checks,
+          selectedByContinent: state.rbnCompareSignal?.selectedByContinent || null
+        });
+      } catch (err) {
+        add('Smoke test execution completed', false, err && err.message ? err.message : String(err));
+        setResult(false, {
+          error: err && err.stack ? err.stack : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

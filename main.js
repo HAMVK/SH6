@@ -198,6 +198,7 @@
   const COACH_RUNTIME_MODULE_URL = './modules/coach/runtime.js?v=6.1.21';
   const SPOTS_DATA_RUNTIME_MODULE_URL = './modules/spots/data-runtime.js?v=6.1.21';
   const SPOTS_ACTIONS_RUNTIME_MODULE_URL = './modules/spots/actions-runtime.js?v=6.1.21';
+  const RBN_COMPARE_VIEW_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-view-runtime.js?v=6.1.21';
   const RBN_COMPARE_MODEL_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-model-runtime.js?v=6.1.21';
   const RBN_COMPARE_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-runtime.js?v=6.1.21';
   const INVESTIGATION_ACTIONS_RUNTIME_MODULE_URL = './modules/ui/investigation-actions-runtime.js?v=6.1.21';
@@ -1299,6 +1300,8 @@
   let spotsDataRuntime = null;
   let spotsActionsRuntimeModulePromise = null;
   let spotsActionsRuntime = null;
+  let rbnCompareViewRuntimeModulePromise = null;
+  let rbnCompareViewRuntime = null;
   let rbnCompareModelRuntimeModulePromise = null;
   let rbnCompareModelRuntime = null;
   let rbnCompareRuntimeModulePromise = null;
@@ -1915,6 +1918,48 @@
       throw new Error('spots actions runtime not loaded');
     }
     return spotsActionsRuntime;
+  }
+
+  function loadRbnCompareViewRuntimeModule() {
+    if (!rbnCompareViewRuntimeModulePromise) {
+      rbnCompareViewRuntimeModulePromise = import(RBN_COMPARE_VIEW_RUNTIME_MODULE_URL)
+        .then((mod) => {
+          if (!mod || typeof mod.createRbnCompareViewRuntime !== 'function') {
+            throw new Error('rbn compare view runtime module unavailable');
+          }
+          rbnCompareViewRuntime = mod.createRbnCompareViewRuntime({
+            getState: () => state,
+            getActiveCompareSlots,
+            getSlotById,
+            compareSlotIds: COMPARE_SLOT_IDS,
+            createCompetitorCoachState,
+            buildCompetitorCoachContext,
+            normalizeCall,
+            normalizeBandToken,
+            formatBandLabel,
+            escapeAttr,
+            escapeHtml,
+            mapSpotStatus,
+            buildRbnDayList,
+            getRbnCompareRankingCached,
+            continentLabel,
+            normalizeSpotterBase,
+            formatNumberSh6,
+            renderReportIntroCard,
+            renderStateCard,
+            analysisModeDxer: ANALYSIS_MODE_DXER
+          });
+          return rbnCompareViewRuntime;
+        });
+    }
+    return rbnCompareViewRuntimeModulePromise;
+  }
+
+  function getRbnCompareViewRuntime() {
+    if (!rbnCompareViewRuntime) {
+      throw new Error('rbn compare view runtime not loaded');
+    }
+    return rbnCompareViewRuntime;
   }
 
   function loadRbnCompareModelRuntimeModule() {
@@ -11999,68 +12044,31 @@
   }
 
   function slotMarkerShape(slotId) {
-    const id = String(slotId || 'A').toUpperCase();
-    if (id === 'B') return 'triangle';
-    if (id === 'C') return 'square';
-    if (id === 'D') return 'diamond';
-    return 'circle';
+    return getRbnCompareViewRuntime().slotMarkerShape(slotId);
   }
 
   function slotMarkerSymbol(slotId) {
-    const shape = slotMarkerShape(slotId);
-    if (shape === 'triangle') return '▲';
-    if (shape === 'square') return '■';
-    if (shape === 'diamond') return '◆';
-    return '●';
+    return getRbnCompareViewRuntime().slotMarkerSymbol(slotId);
   }
 
   function slotLineDash(slotId) {
-    const id = String(slotId || 'A').toUpperCase();
-    if (id === 'B') return [8, 6];
-    if (id === 'C') return [2, 5];
-    if (id === 'D') return [10, 5, 2, 5];
-    return [];
+    return getRbnCompareViewRuntime().slotLineDash(slotId);
   }
 
   function slotLineStyleLabel(slotId) {
-    const id = String(slotId || 'A').toUpperCase();
-    if (id === 'B') return 'dashed';
-    if (id === 'C') return 'dotted';
-    if (id === 'D') return 'dash-dot';
-    return 'solid';
+    return getRbnCompareViewRuntime().slotLineStyleLabel(slotId);
   }
 
   function slotLineStyleSample(slotId) {
-    const id = String(slotId || 'A').toUpperCase();
-    if (id === 'B') return '- - -';
-    if (id === 'C') return '. . .';
-    if (id === 'D') return '-.-.-';
-    return '-----';
+    return getRbnCompareViewRuntime().slotLineStyleSample(slotId);
   }
 
   function slotLegendMarkerSvg(slotId) {
-    const shape = slotMarkerShape(slotId);
-    // Use a neutral marker color; in the plot, markers are band-colored.
-    const fill = '#23466f';
-    if (shape === 'triangle') {
-      return `<svg class="rbn-slot-marker" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><polygon points="6,2 10,10 2,10" fill="${fill}"/></svg>`;
-    }
-    if (shape === 'square') {
-      return `<svg class="rbn-slot-marker" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="3" y="3" width="6" height="6" fill="${fill}"/></svg>`;
-    }
-    if (shape === 'diamond') {
-      return `<svg class="rbn-slot-marker" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><polygon points="6,1.7 10.3,6 6,10.3 1.7,6" fill="${fill}"/></svg>`;
-    }
-    return `<svg class="rbn-slot-marker" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="3.2" fill="${fill}"/></svg>`;
+    return getRbnCompareViewRuntime().slotLegendMarkerSvg(slotId);
   }
 
   function slotLegendLineSvg(slotId) {
-    const dash = slotLineDash(slotId);
-    const width = String(slotId || 'A').toUpperCase() === 'A' ? 2.1 : 1.7;
-    // Use the same dash + stroke characteristics as the trendlines in the chart.
-    const stroke = '#23466f';
-    const dashAttr = (dash && dash.length) ? ` stroke-dasharray="${dash.join(' ')}"` : '';
-    return `<svg class="rbn-slot-line" width="46" height="12" viewBox="0 0 46 12" aria-hidden="true"><line x1="2" y1="6" x2="44" y2="6" stroke="${stroke}" stroke-width="${width}" stroke-linecap="round"${dashAttr} vector-effect="non-scaling-stroke" opacity="0.45"/></svg>`;
+    return getRbnCompareViewRuntime().slotLegendLineSvg(slotId);
   }
 
   function formatUtcTick(ts) {
@@ -12753,168 +12761,7 @@
   }
 
   function renderRbnCompareSignal() {
-    if (!state.qsoData || !state.derived) {
-      return renderStateCard({
-        type: 'info',
-        title: 'RBN compare signal unavailable',
-        message: 'Load a log to enable RBN signal compare.'
-      });
-    }
-
-    const slots = getActiveCompareSlots();
-    const loaded = slots.filter((e) => e.slot?.qsoData && e.slot?.derived);
-    const base = loaded.find((e) => e.id === 'A') || loaded[0] || null;
-    const bandKey = normalizeBandToken(state.globalBandFilter || '');
-    const bandLabel = bandKey ? formatBandLabel(bandKey) : 'All bands';
-    const slotLegendHtml = loaded.map((entry) => {
-      const call = normalizeCall(entry.slot?.derived?.contestMeta?.stationCallsign || '');
-      const label = call || entry.label || `Log ${entry.id}`;
-      const markerSvg = slotLegendMarkerSvg(entry.id);
-      const lineSvg = slotLegendLineSvg(entry.id);
-      return `<span class="rbn-slot-chip" title="${escapeAttr(slotLineStyleLabel(entry.id))}"><span class="rbn-slot-chip-call">${escapeHtml(label)}</span>${markerSvg}${lineSvg}</span>`;
-    }).join('');
-
-    const compareOffer = (() => {
-      const emptySlots = COMPARE_SLOT_IDS.filter((slotId) => !getSlotById(slotId)?.qsoData);
-      if (!emptySlots.length) return '';
-      const coach = state.competitorCoach || createCompetitorCoachState();
-      const context = buildCompetitorCoachContext(state.cqApiClient || null);
-      const contestId = String(coach.contestId || context.contestId || '').trim().toUpperCase();
-      const mode = String(coach.mode || context.mode || '').trim().toLowerCase();
-      const currentCall = normalizeCall(state.derived?.contestMeta?.stationCallsign || '');
-      const rivals = Array.isArray(coach.closestRivals) ? coach.closestRivals : [];
-      const picks = [];
-      const seen = new Set();
-      for (const row of rivals) {
-        const call = normalizeCall(row?.callsign || '');
-        const year = Number(row?.year);
-        if (!call || call === currentCall) continue;
-        if (!Number.isFinite(year)) continue;
-        const key = `${call}|${year}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        picks.push({ call, year });
-        if (picks.length >= emptySlots.length) break;
-      }
-      const buttons = emptySlots.map((slotId, idx) => {
-        const pick = picks[idx] || picks[0] || null;
-        if (!pick || !contestId || !mode) return '';
-        return `<button type="button" class="cqapi-load-btn coach-load-btn" data-slot="${escapeAttr(slotId)}" data-year="${escapeAttr(String(pick.year))}" data-callsign="${escapeAttr(pick.call)}" data-contest="${escapeAttr(contestId)}" data-mode="${escapeAttr(mode)}">Load ${escapeHtml(pick.call)} to Log ${escapeHtml(slotId)}</button>`;
-      }).filter(Boolean).join(' ');
-      const navBtn = `<button type="button" class="button rbn-coach-nav" data-report="competitor_coach">Open Competitor coach</button>`;
-      const note = buttons
-        ? 'Load a few nearby rivals for side-by-side signal comparison:'
-        : 'Tip: open Competitor coach to select and load rivals into Log B/C/D for compare.';
-      return `
-        <div class="export-actions export-note">
-          <b>Compare tip</b> ${escapeHtml(note)}
-          <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">${buttons || ''}${navBtn}</div>
-        </div>
-      `;
-    })();
-
-    const rbnControls = loaded.map((entry) => {
-      const status = mapSpotStatus(entry.slot?.rbnState?.status || 'idle');
-      const statusText = status === 'ready' ? 'ready' : (status === 'loading' ? 'loading' : (status === 'error' ? 'error' : 'idle'));
-      return `<span class="cqapi-muted">${escapeHtml(entry.label)} RBN: ${escapeHtml(statusText)}</span>`;
-    }).join(' · ');
-
-    const warning = (() => {
-      const minTs = state.derived?.timeRange?.minTs;
-      const maxTs = state.derived?.timeRange?.maxTs;
-      const days = buildRbnDayList(minTs, maxTs);
-      if ((days || []).length > 2) {
-        const spanText = state.analysisMode === ANALYSIS_MODE_DXER ? 'this log' : 'this contest';
-        return `<div class="export-actions export-note">Note: ${escapeHtml(spanText)} spans more than 2 UTC dates; RBN queries are limited to 2 dates at a time. Adjust selected days in <b>RBN spots</b> if needed.</div>`;
-      }
-      return '';
-    })();
-
-    // Hide unknown-continent ("N/A") cards to avoid rendering "N/A top skimmer".
-    const contOrder = ['NA', 'SA', 'EU', 'AF', 'AS', 'OC'];
-    const selections = (state.rbnCompareSignal && typeof state.rbnCompareSignal === 'object')
-      ? state.rbnCompareSignal
-      : { selectedByContinent: {} };
-    if (!state.rbnCompareSignal) state.rbnCompareSignal = selections;
-    if (!selections.selectedByContinent) selections.selectedByContinent = {};
-
-    const rankingCached = base ? getRbnCompareRankingCached(base.id, base.slot, bandKey) : null;
-    const byContinent = rankingCached?.byContinent || new Map();
-    const baseReady = base?.slot?.rbnState?.status === 'ready';
-
-    // Sort continent cards by spot volume (for this band filter), descending.
-    const contSorted = contOrder.map((cont, orderIndex) => {
-      const list = byContinent.get(cont) || [];
-      const topCount = list[0]?.count || 0;
-      return { cont, list, topCount, orderIndex };
-    }).sort((a, b) => (b.topCount - a.topCount) || (a.orderIndex - b.orderIndex));
-
-    const cards = contSorted.map(({ cont, list }) => {
-      const contLabelText = continentLabel(cont) || cont;
-      const contLabel = escapeHtml(contLabelText);
-      const saved = normalizeSpotterBase(String(selections.selectedByContinent[cont] || '').trim());
-      const defaultSpotter = (list.length && saved && list.some((e) => e.spotter === saved)) ? saved : (list[0]?.spotter || '');
-      if (defaultSpotter) selections.selectedByContinent[cont] = defaultSpotter;
-      const options = list.length
-        ? list.slice(0, 80).map((e) => {
-          const label = `${e.spotter} (${formatNumberSh6(e.count)})`;
-          const spot = e.spotter;
-          return `<option value="${escapeAttr(spot)}" ${spot === defaultSpotter ? 'selected' : ''}>${escapeHtml(label)}</option>`;
-        }).join('')
-        : `<option value="">${rankingCached ? 'No skimmers' : 'Building list...'}</option>`;
-      const statusMsg = !list.length
-        ? (baseReady ? `No RBN spots found for ${contLabelText}.` : 'Load RBN spots to populate charts.')
-        : '';
-      const statusHidden = list.length ? 'hidden' : '';
-      const spotterAttr = list.length ? escapeAttr(defaultSpotter) : '';
-      const selectDisabled = list.length ? '' : 'disabled';
-      const copyDisabled = list.length ? '' : 'disabled';
-      return `
-        <article class="rbn-signal-card">
-          <div class="rbn-signal-head">
-            <h4>${contLabel} top skimmer</h4>
-            <label class="rbn-signal-picker">
-              <span>Skimmer</span>
-              <select class="rbn-signal-select" data-continent="${escapeAttr(cont)}" ${selectDisabled}>
-                ${options}
-              </select>
-            </label>
-            <button type="button" class="button rbn-signal-copy-btn" data-continent="${escapeAttr(cont)}" ${copyDisabled} aria-label="Copy ${contLabel} graph as image">
-              <span class="rbn-signal-copy-icon" aria-hidden="true"><svg viewBox="0 0 16 16" role="presentation" focusable="false"><rect x="2.25" y="2.25" width="8.5" height="8.5" rx="1.2" ry="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="5.25" y="5.25" width="8.5" height="8.5" rx="1.2" ry="1.2" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span>
-              <span class="rbn-signal-copy-label">Copy as image</span>
-            </button>
-            <button type="button" class="button rbn-signal-reset-btn" ${copyDisabled}>Reset zoom</button>
-            <span class="rbn-signal-hint cqapi-muted">Drag to zoom time, double-click to reset.</span>
-            <span class="rbn-signal-status cqapi-muted" ${statusHidden}>${escapeHtml(statusMsg)}</span>
-          </div>
-          <div class="rbn-signal-body">
-            <div class="rbn-signal-plot">
-              <canvas class="rbn-signal-canvas" data-continent="${escapeAttr(cont)}" data-spotter="${spotterAttr}" data-height="260" role="img" aria-label="RBN signal scatter plot"></canvas>
-              <div class="rbn-signal-zoom-box" hidden></div>
-              <div class="rbn-signal-meta cqapi-muted">0 points plotted · SNR range: N/A</div>
-            </div>
-            <div class="rbn-signal-legend">
-              <span class="rbn-signal-legend-bands"></span>
-              <span class="rbn-legend-item rbn-legend-shape">${slotLegendHtml}</span>
-            </div>
-          </div>
-        </article>
-      `;
-    }).join('');
-
-    const intro = renderReportIntroCard(
-      'RBN compare signal',
-      'Scatter charts of RBN SNR (dB) versus time, colored by band and overlaid across loaded logs.',
-      []
-    );
-
-    return `
-      ${intro}
-      ${warning}
-      <div class="export-actions">${rbnControls || '<span class="cqapi-muted">Load at least one log to enable RBN charts.</span>'}</div>
-      ${compareOffer}
-      <div class="rbn-signal-grid">${cards}</div>
-    `;
+    return getRbnCompareViewRuntime().renderRbnCompareSignal();
   }
 
   function renderSpotsSharedControls(source) {
@@ -18537,6 +18384,7 @@
     const coachRuntimeReady = loadCoachRuntimeModule();
     const spotsDataRuntimeReady = loadSpotsDataRuntimeModule();
     const spotsActionsRuntimeReady = loadSpotsActionsRuntimeModule();
+    const rbnCompareViewRuntimeReady = loadRbnCompareViewRuntimeModule();
     const rbnCompareModelRuntimeReady = loadRbnCompareModelRuntimeModule();
     const rbnCompareRuntimeReady = loadRbnCompareRuntimeModule();
     const investigationActionsRuntimeReady = loadInvestigationActionsRuntimeModule();
@@ -18554,6 +18402,7 @@
     await coachRuntimeReady;
     await spotsDataRuntimeReady;
     await spotsActionsRuntimeReady;
+    await rbnCompareViewRuntimeReady;
     await rbnCompareModelRuntimeReady;
     await rbnCompareRuntimeReady;
     await investigationActionsRuntimeReady;
