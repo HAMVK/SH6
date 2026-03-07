@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spots Actions Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Spots Actions Runtime Smoke</h1>
+  <p>Checks the extracted spots/RBN interaction runtime for report setup, auto-load behavior, filters, drilldowns, and RBN day selection.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      function createSpotState(source = 'spots') {
+        return {
+          source,
+          status: 'idle',
+          error: null,
+          bandFilter: [],
+          windowMinutes: 15,
+          drillBand: '',
+          drillHour: null,
+          drillContinent: '',
+          drillCqZone: '',
+          drillItuZone: '',
+          selectedDays: []
+        };
+      }
+
+      try {
+        const [mainSource, moduleSource, actionsModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/spots/actions-runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/spots/actions-runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/spots/actions-runtime.js')
+        ]);
+
+        add('Main.js imports the spots actions runtime module', mainSource.includes("const SPOTS_ACTIONS_RUNTIME_MODULE_URL = './modules/spots/actions-runtime.js?v=6.1.21';"));
+        add('Main.js preloads the spots actions runtime during init', mainSource.includes('const spotsActionsRuntimeReady = loadSpotsActionsRuntimeModule();') && mainSource.includes('await spotsActionsRuntimeReady;'));
+        add(
+          'Main.js delegates standard spots reports and reuses shared controls for RBN compare signal',
+          mainSource.includes('getSpotsActionsRuntime().bindSpotReport(reportId);')
+            && mainSource.includes("getSpotsActionsRuntime().bindSpotControls('rbn');"),
+          ''
+        );
+        add('Spots actions runtime exports the factory', moduleSource.includes('export function createSpotsActionsRuntime'));
+
+        const dom = {
+          viewContainer: document.createElement('div'),
+          spotsStatusRow: document.createElement('div'),
+          rbnStatusRow: document.createElement('div')
+        };
+        dom.spotsStatusRow.className = 'hidden';
+        dom.rbnStatusRow.className = 'hidden';
+        document.body.appendChild(dom.spotsStatusRow);
+        document.body.appendChild(dom.rbnStatusRow);
+        document.body.appendChild(dom.viewContainer);
+
+        const loadCalls = [];
+        const computeCalls = [];
+        const renderCalls = [];
+        const updateCalls = [];
+        const zoomBindings = [];
+        const alignCalls = [];
+        const compareSlots = [];
+        let state = {
+          compareEnabled: false,
+          globalBandFilter: '20m',
+          derived: {
+            contestMeta: { stationCallsign: 'S55OO' },
+            timeRange: { minTs: 1, maxTs: 2 }
+          },
+          qsoData: { qsos: [] },
+          spotsState: createSpotState('spots'),
+          rbnState: Object.assign(createSpotState('rbn'), {
+            selectedDays: ['20251116', '20251117']
+          })
+        };
+
+        const runtime = actionsModule.createSpotsActionsRuntime({
+          getDom: () => dom,
+          getState: () => state,
+          getLoadedCompareSlots: () => compareSlots,
+          getSpotStateBySource: (slot, source) => (source === 'rbn' ? slot.rbnState : slot.spotsState),
+          getSlotById: (slotId) => (slotId === 'A' ? state : null),
+          normalizeCall: (value) => String(value || '').trim().toUpperCase(),
+          normalizeBandToken: (value) => String(value || '').trim().toUpperCase(),
+          buildSpotWindowKey: (minTs, maxTs) => `${minTs}-${maxTs}`,
+          selectRbnDaysForSlot: (slot) => Array.isArray(slot.rbnState.selectedDays) ? slot.rbnState.selectedDays.slice() : [],
+          loadSpotsForSource: (slot, source) => loadCalls.push({ slot, source }),
+          computeSpotsStats: (slot, spotState) => computeCalls.push({ slot, source: spotState?.source, windowMinutes: spotState?.windowMinutes, bandFilter: Array.isArray(spotState?.bandFilter) ? spotState.bandFilter.slice() : [] }),
+          renderActiveReport: () => renderCalls.push('render'),
+          updateDataStatus: () => updateCalls.push('update'),
+          bindDragZoomOnCanvas: (canvas, options) => zoomBindings.push({ canvasClass: canvas.className, chartType: options.chartType, bandKey: options.getBandKey() }),
+          alignSpotsCompareSections: (reportId) => alignCalls.push(reportId)
+        });
+
+        const originalScrollIntoView = Element.prototype.scrollIntoView;
+        const scrolledTargets = [];
+        Element.prototype.scrollIntoView = function scrollIntoViewStub() {
+          scrolledTargets.push(this.id || this.className || this.tagName);
+        };
+
+        try {
+          dom.viewContainer.innerHTML = `
+            <div id="coach-target"></div>
+            <input class="spots-window" data-source="spots" data-slot="A" value="15">
+            <span class="spots-window-value" data-source="spots" data-slot="A">15</span>
+            <label><input type="checkbox" class="spots-band-filter" data-source="spots" data-slot="A" data-band="20M"></label>
+            <button class="spots-heat-cell" data-source="spots" data-slot="A" data-band="20m" data-hour="5"></button>
+            <button class="spots-drill-filter-btn" data-source="spots" data-slot="A" data-type="continent" data-value="eu"></button>
+            <button class="spots-drill-clear" data-source="spots" data-slot="A"></button>
+            <button class="spots-coach-action" data-source="spots" data-target="coach-target"></button>
+            <canvas class="spots-signal-canvas"></canvas>
+          `;
+
+          runtime.bindSpotControls('spots');
+          add('bindSpotControls auto-loads idle spots data', loadCalls.length === 1 && loadCalls[0].source === 'spots', JSON.stringify(loadCalls));
+
+          const windowInput = dom.viewContainer.querySelector('.spots-window');
+          windowInput.value = '22';
+          windowInput.dispatchEvent(new Event('input', { bubbles: true }));
+          add('Spot window input updates state and recomputes stats', state.spotsState.windowMinutes === 22 && computeCalls.some((entry) => entry.source === 'spots' && entry.windowMinutes === 22), JSON.stringify({ windowMinutes: state.spotsState.windowMinutes, computeCalls }));
+
+          const bandFilter = dom.viewContainer.querySelector('.spots-band-filter');
+          bandFilter.checked = true;
+          bandFilter.dispatchEvent(new Event('change', { bubbles: true }));
+          add('Band filter changes update the current spot filter', state.spotsState.bandFilter.includes('20M'), JSON.stringify(state.spotsState.bandFilter));
+
+          const heatCell = dom.viewContainer.querySelector('.spots-heat-cell');
+          heatCell.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          const drillButton = dom.viewContainer.querySelector('.spots-drill-filter-btn');
+          drillButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          const clearButton = dom.viewContainer.querySelector('.spots-drill-clear');
+          clearButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          const coachButton = dom.viewContainer.querySelector('.spots-coach-action');
+          coachButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          add(
+            'Drilldown and coach actions update drill state and scroll to the target',
+            state.spotsState.drillBand === ''
+              && state.spotsState.drillHour === null
+              && state.spotsState.drillContinent === ''
+              && scrolledTargets.includes('coach-target'),
+            JSON.stringify({
+              drillBand: state.spotsState.drillBand,
+              drillHour: state.spotsState.drillHour,
+              drillContinent: state.spotsState.drillContinent,
+              scrolledTargets
+            })
+          );
+
+          loadCalls.length = 0;
+          dom.viewContainer.innerHTML = `
+            <select class="rbn-day-select" data-source="rbn" data-slot="A">
+              <option value="20251116" selected>2025-11-16</option>
+              <option value="20251117">2025-11-17</option>
+            </select>
+            <select class="rbn-day-select" data-source="rbn" data-slot="A">
+              <option value="20251116" selected>2025-11-16</option>
+              <option value="20251117">2025-11-17</option>
+            </select>
+          `;
+          state.rbnState.status = 'ready';
+          state.rbnState.selectedDays = ['20251116', '20251116'];
+          runtime.bindSpotControls('rbn');
+          dom.viewContainer.querySelector('.rbn-day-select').dispatchEvent(new Event('change', { bubbles: true }));
+          add(
+            'RBN day selection keeps the two-day pair unique and reloads data',
+            Array.isArray(state.rbnState.selectedDays)
+              && state.rbnState.selectedDays.length === 2
+              && state.rbnState.selectedDays[0] === '20251116'
+              && state.rbnState.selectedDays[1] === '20251117'
+              && loadCalls.some((entry) => entry.source === 'rbn'),
+            JSON.stringify({ selectedDays: state.rbnState.selectedDays, loadCalls })
+          );
+
+          loadCalls.length = 0;
+          zoomBindings.length = 0;
+          alignCalls.length = 0;
+          updateCalls.length = 0;
+          dom.viewContainer.innerHTML = '<canvas class="spots-signal-canvas"></canvas>';
+          const handled = runtime.bindSpotReport('spots');
+          add(
+            'bindSpotReport sets up the standard spots report shell',
+            handled
+              && !dom.spotsStatusRow.classList.contains('hidden')
+              && updateCalls.length === 1
+              && zoomBindings.length === 1
+              && alignCalls.includes('spots')
+              && loadCalls.some((entry) => entry.source === 'spots'),
+            JSON.stringify({
+              handled,
+              spotsStatusHidden: dom.spotsStatusRow.classList.contains('hidden'),
+              updateCalls,
+              zoomBindings,
+              alignCalls,
+              loadCalls
+            })
+          );
+        } finally {
+          Element.prototype.scrollIntoView = originalScrollIntoView;
+        }
+
+        const ok = checks.every((entry) => entry.ok);
+        setResult(ok, {
+          checks,
+          loadCalls,
+          computeCalls,
+          renderCalls: renderCalls.length,
+          updateCalls: updateCalls.length,
+          zoomBindings,
+          alignCalls
+        });
+      } catch (err) {
+        add('Smoke test execution completed', false, err && err.message ? err.message : String(err));
+        setResult(false, {
+          error: err && err.stack ? err.stack : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

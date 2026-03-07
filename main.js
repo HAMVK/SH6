@@ -197,6 +197,7 @@
   const ANALYSIS_CONTROLS_RUNTIME_MODULE_URL = './modules/ui/analysis-controls-runtime.js?v=6.1.21';
   const COACH_RUNTIME_MODULE_URL = './modules/coach/runtime.js?v=6.1.21';
   const SPOTS_DATA_RUNTIME_MODULE_URL = './modules/spots/data-runtime.js?v=6.1.21';
+  const SPOTS_ACTIONS_RUNTIME_MODULE_URL = './modules/spots/actions-runtime.js?v=6.1.21';
   const INVESTIGATION_ACTIONS_RUNTIME_MODULE_URL = './modules/ui/investigation-actions-runtime.js?v=6.1.21';
   const INVESTIGATION_WORKSPACE_MODULE_URL = './modules/reports/investigation-workspace.js?v=6.1.21';
   const SESSION_CODEC_MODULE_URL = './modules/session/codec.js?v=6.1.21';
@@ -1296,6 +1297,8 @@
   let coachRuntime = null;
   let spotsDataRuntimeModulePromise = null;
   let spotsDataRuntime = null;
+  let spotsActionsRuntimeModulePromise = null;
+  let spotsActionsRuntime = null;
   let investigationActionsRuntimeModulePromise = null;
   let investigationActionsRuntime = null;
   let investigationWorkspaceModulePromise = null;
@@ -1871,6 +1874,43 @@
       throw new Error('spots data runtime not loaded');
     }
     return spotsDataRuntime;
+  }
+
+  function loadSpotsActionsRuntimeModule() {
+    if (!spotsActionsRuntimeModulePromise) {
+      spotsActionsRuntimeModulePromise = import(SPOTS_ACTIONS_RUNTIME_MODULE_URL)
+        .then((mod) => {
+          if (!mod || typeof mod.createSpotsActionsRuntime !== 'function') {
+            throw new Error('spots actions runtime module unavailable');
+          }
+          spotsActionsRuntime = mod.createSpotsActionsRuntime({
+            getDom: () => dom,
+            getState: () => state,
+            getLoadedCompareSlots,
+            getSpotStateBySource,
+            getSlotById,
+            normalizeCall,
+            normalizeBandToken,
+            buildSpotWindowKey,
+            selectRbnDaysForSlot,
+            loadSpotsForSource,
+            computeSpotsStats,
+            renderActiveReport,
+            updateDataStatus,
+            bindDragZoomOnCanvas,
+            alignSpotsCompareSections
+          });
+          return spotsActionsRuntime;
+        });
+    }
+    return spotsActionsRuntimeModulePromise;
+  }
+
+  function getSpotsActionsRuntime() {
+    if (!spotsActionsRuntime) {
+      throw new Error('spots actions runtime not loaded');
+    }
+    return spotsActionsRuntime;
   }
 
   function loadInvestigationActionsRuntimeModule() {
@@ -17545,237 +17585,11 @@
         });
       }
     }
-    const bindSpotControls = (source) => {
-      const loadTargets = state.compareEnabled ? getLoadedCompareSlots() : [{ id: 'A', slot: state }];
-      loadTargets.forEach((entry) => {
-        if (!entry.slot?.derived || !entry.slot?.qsoData) return;
-        const spotState = getSpotStateBySource(entry.slot, source);
-        // Auto-load/reload when needed; avoid calling when already current to prevent render loops.
-        const call = normalizeCall(entry.slot?.derived?.contestMeta?.stationCallsign || '');
-        const minTs = entry.slot?.derived?.timeRange?.minTs;
-        const maxTs = entry.slot?.derived?.timeRange?.maxTs;
-        const windowKey = (Number.isFinite(minTs) && Number.isFinite(maxTs)) ? buildSpotWindowKey(minTs, maxTs) : '';
-        const days = source === 'rbn' ? selectRbnDaysForSlot(entry.slot, minTs, maxTs) : [];
-        const daysKey = source === 'rbn' ? (days || []).join(',') : '';
-        const requestKey = source === 'rbn'
-          ? `${call}|${windowKey}|${daysKey}`
-          : `${call}|${windowKey}`;
-        let needs = spotState.status === 'idle';
-        if (!needs && call && windowKey) {
-          const readyCurrent = spotState.status === 'ready'
-            && spotState.lastCall === call
-            && spotState.lastWindowKey === windowKey
-            && (source !== 'rbn' || String(spotState.lastDaysKey || '') === daysKey);
-          const loadingCurrent = spotState.status === 'loading'
-            && Boolean(spotState.inflightPromise)
-            && String(spotState.inflightKey || '') === requestKey;
-          const qrxCurrent = spotState.status === 'qrx'
-            && String(spotState.lastErrorKey || '') === requestKey;
-          needs = !(readyCurrent || loadingCurrent || qrxCurrent);
-        }
-        if (needs && spotState.status === 'error' && call && windowKey) {
-          const now = Date.now();
-          const errorKey = requestKey;
-          const lastKey = String(spotState.lastErrorKey || '');
-          const lastAt = Number(spotState.lastErrorAt || 0);
-          if (lastKey === errorKey && (now - lastAt) < 60000) {
-            needs = false;
-          }
-        }
-        if (needs) loadSpotsForSource(entry.slot, source);
-      });
-      const windowInputs = document.querySelectorAll(`.spots-window[data-source="${source}"]:not([data-shared="1"])`);
-      windowInputs.forEach((input) => {
-        input.addEventListener('input', () => {
-          const slotId = input.dataset.slot || 'A';
-          const slot = getSlotById(slotId) || state;
-          const spotState = getSpotStateBySource(slot, source);
-          spotState.windowMinutes = Number(input.value) || 15;
-          const valueEl = document.querySelector(`.spots-window-value[data-slot="${slotId}"][data-source="${source}"]`);
-          if (valueEl) valueEl.textContent = String(spotState.windowMinutes);
-          computeSpotsStats(slot, spotState);
-          renderActiveReport();
-        });
-      });
-      const filters = document.querySelectorAll(`.spots-band-filter[data-source="${source}"]:not([data-shared="1"])`);
-      filters.forEach((el) => {
-        el.addEventListener('change', () => {
-          const slotId = el.dataset.slot || 'A';
-          const slot = getSlotById(slotId) || state;
-          const spotState = getSpotStateBySource(slot, source);
-          const band = el.dataset.band || '';
-          const current = new Set(spotState.bandFilter || []);
-          if (band === 'ALL') {
-            if (el.checked) current.clear();
-          } else {
-            if (el.checked) current.add(band);
-            else current.delete(band);
-          }
-          spotState.bandFilter = Array.from(current);
-          computeSpotsStats(slot, spotState);
-          renderActiveReport();
-        });
-      });
-      const heatCells = document.querySelectorAll(`.spots-heat-cell[data-source="${source}"]`);
-      heatCells.forEach((cell) => {
-        cell.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          const slotId = cell.dataset.slot || 'A';
-          const slot = getSlotById(slotId) || state;
-          const spotState = getSpotStateBySource(slot, source);
-          const band = normalizeBandToken(cell.dataset.band || '') || '';
-          const hour = Number(cell.dataset.hour);
-          if (!band || !Number.isFinite(hour)) return;
-          spotState.drillBand = band;
-          spotState.drillHour = Math.max(0, Math.min(23, Math.round(hour)));
-          spotState.drillContinent = '';
-          spotState.drillCqZone = '';
-          spotState.drillItuZone = '';
-          renderActiveReport();
-        });
-      });
-      const drillClearButtons = document.querySelectorAll(`.spots-drill-clear[data-source="${source}"]`);
-      drillClearButtons.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          const slotId = btn.dataset.slot || 'A';
-          const slot = getSlotById(slotId) || state;
-          const spotState = getSpotStateBySource(slot, source);
-          spotState.drillBand = '';
-          spotState.drillHour = null;
-          spotState.drillContinent = '';
-          spotState.drillCqZone = '';
-          spotState.drillItuZone = '';
-          renderActiveReport();
-        });
-      });
-      const drillFilterButtons = document.querySelectorAll(`.spots-drill-filter-btn[data-source="${source}"]`);
-      drillFilterButtons.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          const slotId = btn.dataset.slot || 'A';
-          const slot = getSlotById(slotId) || state;
-          const spotState = getSpotStateBySource(slot, source);
-          const type = String(btn.dataset.type || '').trim().toLowerCase();
-          const value = String(btn.dataset.value || '').trim().toUpperCase();
-          if (type === 'continent') {
-            spotState.drillContinent = value;
-          } else if (type === 'cq') {
-            spotState.drillCqZone = value;
-          } else if (type === 'itu') {
-            spotState.drillItuZone = value;
-          } else {
-            return;
-          }
-          renderActiveReport();
-        });
-      });
-      const coachActions = document.querySelectorAll(`.spots-coach-action[data-source="${source}"]`);
-      coachActions.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          const targetId = String(btn.dataset.target || '').trim();
-          if (!targetId) return;
-          const target = document.getElementById(targetId);
-          if (!target) return;
-          const reduceMotion = Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-          target.scrollIntoView({
-            block: 'start',
-            behavior: reduceMotion ? 'auto' : 'smooth'
-          });
-        });
-      });
-      const sharedWindow = document.querySelectorAll(`.spots-window[data-source="${source}"][data-shared="1"]`);
-      sharedWindow.forEach((input) => {
-        input.addEventListener('input', () => {
-          const next = Number(input.value) || 15;
-          const valueEl = document.querySelector(`.spots-window-value[data-source="${source}"][data-shared="1"]`);
-          if (valueEl) valueEl.textContent = String(next);
-          const targets = state.compareEnabled ? getLoadedCompareSlots() : [{ id: 'A', slot: state }];
-          targets.forEach((entry) => {
-            const spotState = getSpotStateBySource(entry.slot, source);
-            spotState.windowMinutes = next;
-            computeSpotsStats(entry.slot, spotState);
-          });
-          renderActiveReport();
-        });
-      });
-      const sharedFilters = document.querySelectorAll(`.spots-band-filter[data-source="${source}"][data-shared="1"]`);
-      sharedFilters.forEach((el) => {
-        el.addEventListener('change', () => {
-          const band = el.dataset.band || '';
-          const targets = state.compareEnabled ? getLoadedCompareSlots() : [{ id: 'A', slot: state }];
-          targets.forEach((entry) => {
-            const spotState = getSpotStateBySource(entry.slot, source);
-            const current = new Set(spotState.bandFilter || []);
-            if (band === 'ALL') {
-              if (el.checked) current.clear();
-            } else {
-              if (el.checked) current.add(band);
-              else current.delete(band);
-            }
-            spotState.bandFilter = Array.from(current);
-            computeSpotsStats(entry.slot, spotState);
-          });
-          renderActiveReport();
-        });
-      });
-      if (source === 'rbn') {
-        const daySelects = document.querySelectorAll(`.rbn-day-select[data-source="${source}"]`);
-        daySelects.forEach((select) => {
-          select.addEventListener('change', () => {
-            const slotId = select.dataset.slot || 'A';
-            const scoped = Array.from(document.querySelectorAll(`.rbn-day-select[data-source="${source}"][data-slot="${slotId}"]`));
-            const values = scoped.map((s) => s.value).filter(Boolean);
-            if (scoped.length === 2 && values.length === 2 && values[0] === values[1]) {
-              const options = Array.from(select.options).map((o) => o.value);
-              const next = options.find((v) => v !== values[0]);
-              if (next) {
-                const other = scoped[0] === select ? scoped[1] : scoped[0];
-                other.value = next;
-              }
-            }
-            const slot = getSlotById(slotId) || state;
-            const rbnState = getSpotStateBySource(slot, 'rbn');
-            rbnState.selectedDays = scoped.map((s) => s.value).filter(Boolean).slice(0, 2);
-            // Immediately reload RBN spots for the newly selected days.
-            loadSpotsForSource(slot, 'rbn');
-          });
-        });
-      }
-    };
-    if (reportId === 'spots') {
-      if (dom.spotsStatusRow) dom.spotsStatusRow.classList.remove('hidden');
-      updateDataStatus();
-      bindSpotControls('spots');
-      const spotsCanvases = Array.from(dom.viewContainer.querySelectorAll('.spots-signal-canvas'));
-      spotsCanvases.forEach((canvas) => {
-        bindDragZoomOnCanvas(canvas, {
-          chartType: 'spots',
-          getBandKey: () => normalizeBandToken(state.globalBandFilter || ''),
-          onZoomChanged: () => renderActiveReport()
-        });
-      });
-      alignSpotsCompareSections(reportId);
-    }
-    if (reportId === 'rbn_spots') {
-      if (dom.rbnStatusRow) dom.rbnStatusRow.classList.remove('hidden');
-      updateDataStatus();
-      bindSpotControls('rbn');
-      const spotsCanvases = Array.from(dom.viewContainer.querySelectorAll('.spots-signal-canvas'));
-      spotsCanvases.forEach((canvas) => {
-        bindDragZoomOnCanvas(canvas, {
-          chartType: 'spots',
-          getBandKey: () => normalizeBandToken(state.globalBandFilter || ''),
-          onZoomChanged: () => renderActiveReport()
-        });
-      });
-      alignSpotsCompareSections(reportId);
-    }
+    getSpotsActionsRuntime().bindSpotReport(reportId);
     if (reportId === 'rbn_compare_signal') {
       if (dom.rbnStatusRow) dom.rbnStatusRow.classList.remove('hidden');
       updateDataStatus();
-      bindSpotControls('rbn');
+      getSpotsActionsRuntime().bindSpotControls('rbn');
       const slotEntries = getActiveCompareSlots().filter((e) => e.slot?.qsoData && e.slot?.derived);
       slotEntries.forEach((entry) => {
         if (entry.slot?.rbnState?.status === 'ready') scheduleRbnCompareIndexBuild(entry.id, entry.slot);
@@ -19058,6 +18872,7 @@
     const analysisControlsRuntimeReady = loadAnalysisControlsRuntimeModule();
     const coachRuntimeReady = loadCoachRuntimeModule();
     const spotsDataRuntimeReady = loadSpotsDataRuntimeModule();
+    const spotsActionsRuntimeReady = loadSpotsActionsRuntimeModule();
     const investigationActionsRuntimeReady = loadInvestigationActionsRuntimeModule();
     const investigationWorkspaceReady = loadInvestigationWorkspaceModule();
     const sessionCodecReady = loadSessionCodecModule();
@@ -19072,6 +18887,7 @@
     await analysisControlsRuntimeReady;
     await coachRuntimeReady;
     await spotsDataRuntimeReady;
+    await spotsActionsRuntimeReady;
     await investigationActionsRuntimeReady;
     setupNavSearch();
     rebuildReports();
