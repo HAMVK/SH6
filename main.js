@@ -198,6 +198,7 @@
   const COACH_RUNTIME_MODULE_URL = './modules/coach/runtime.js?v=6.1.21';
   const SPOTS_DATA_RUNTIME_MODULE_URL = './modules/spots/data-runtime.js?v=6.1.21';
   const SPOTS_ACTIONS_RUNTIME_MODULE_URL = './modules/spots/actions-runtime.js?v=6.1.21';
+  const RBN_COMPARE_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-runtime.js?v=6.1.21';
   const INVESTIGATION_ACTIONS_RUNTIME_MODULE_URL = './modules/ui/investigation-actions-runtime.js?v=6.1.21';
   const INVESTIGATION_WORKSPACE_MODULE_URL = './modules/reports/investigation-workspace.js?v=6.1.21';
   const SESSION_CODEC_MODULE_URL = './modules/session/codec.js?v=6.1.21';
@@ -1269,8 +1270,6 @@
   let callsignGridTimer = null;
   let callsignGridInFlight = false;
   let callsignLookupLastRequestTs = 0;
-  let rbnCompareSignalResizeObserver = null;
-  let rbnCompareSignalResizeRaf = 0;
   let html2CanvasLoadPromise = null;
   let agentRuntimeModulePromise = null;
   let navigationRuntimeModulePromise = null;
@@ -1299,6 +1298,8 @@
   let spotsDataRuntime = null;
   let spotsActionsRuntimeModulePromise = null;
   let spotsActionsRuntime = null;
+  let rbnCompareRuntimeModulePromise = null;
+  let rbnCompareRuntime = null;
   let investigationActionsRuntimeModulePromise = null;
   let investigationActionsRuntime = null;
   let investigationWorkspaceModulePromise = null;
@@ -1911,6 +1912,43 @@
       throw new Error('spots actions runtime not loaded');
     }
     return spotsActionsRuntime;
+  }
+
+  function loadRbnCompareRuntimeModule() {
+    if (!rbnCompareRuntimeModulePromise) {
+      rbnCompareRuntimeModulePromise = import(RBN_COMPARE_RUNTIME_MODULE_URL)
+        .then((mod) => {
+          if (!mod || typeof mod.createRbnCompareRuntime !== 'function') {
+            throw new Error('rbn compare runtime module unavailable');
+          }
+          rbnCompareRuntime = mod.createRbnCompareRuntime({
+            getDom: () => dom,
+            getState: () => state,
+            getActiveCompareSlots,
+            setActiveReportById,
+            updateDataStatus,
+            bindSpotControls: (source) => getSpotsActionsRuntime().bindSpotControls(source),
+            scheduleRbnCompareIndexBuild,
+            normalizeSpotterBase,
+            normalizeBandToken,
+            scheduleRbnCompareSignalDraw,
+            copyRbnSignalCardImage,
+            getCanvasZoomKey,
+            clearCanvasZoom,
+            bindDragZoomOnCanvas,
+            populateRbnCompareSignalSpotterSelects
+          });
+          return rbnCompareRuntime;
+        });
+    }
+    return rbnCompareRuntimeModulePromise;
+  }
+
+  function getRbnCompareRuntime() {
+    if (!rbnCompareRuntime) {
+      throw new Error('rbn compare runtime not loaded');
+    }
+    return rbnCompareRuntime;
   }
 
   function loadInvestigationActionsRuntimeModule() {
@@ -11874,7 +11912,6 @@
   const rbnCompareSignalRankingCache = new Map(); // `${slotId}|${bandKey||'ALL'}` -> { dataKey, byContinent }
   const rbnCompareSignalCanvasJobs = new WeakMap(); // canvas -> { token, raf }
   let rbnCompareSignalDrawRaf = 0;
-  let rbnCompareSignalIntersectionObserver = null;
 
   function rbnCompareSlotDataKey(slot) {
     const r = slot?.rbnState;
@@ -12682,8 +12719,7 @@
     if (!root) return;
     const canvases = Array.from(root.querySelectorAll('.rbn-signal-canvas')).filter((c) => {
       if (!(c instanceof HTMLCanvasElement)) return false;
-      if (!rbnCompareSignalIntersectionObserver) return true;
-      return c.dataset.rbnVisible === '1';
+      return c.dataset.rbnVisible !== '0';
     });
     if (!canvases.length) return;
 
@@ -17492,15 +17528,7 @@
   }
 
   function bindReportInteractions(reportId) {
-    if (reportId !== 'rbn_compare_signal' && rbnCompareSignalResizeObserver) {
-      rbnCompareSignalResizeObserver.disconnect();
-      rbnCompareSignalResizeObserver = null;
-      rbnCompareSignalResizeRaf = 0;
-    }
-    if (reportId !== 'rbn_compare_signal' && rbnCompareSignalIntersectionObserver) {
-      rbnCompareSignalIntersectionObserver.disconnect();
-      rbnCompareSignalIntersectionObserver = null;
-    }
+    getRbnCompareRuntime().teardownIfInactive(reportId);
     wrapWideTables(dom.viewContainer, reportId);
     makeTablesSortable(dom.viewContainer);
     getCompareControllerRuntime().bindWorkspaceInteractions(reportId);
@@ -17586,109 +17614,7 @@
       }
     }
     getSpotsActionsRuntime().bindSpotReport(reportId);
-    if (reportId === 'rbn_compare_signal') {
-      if (dom.rbnStatusRow) dom.rbnStatusRow.classList.remove('hidden');
-      updateDataStatus();
-      getSpotsActionsRuntime().bindSpotControls('rbn');
-      const slotEntries = getActiveCompareSlots().filter((e) => e.slot?.qsoData && e.slot?.derived);
-      slotEntries.forEach((entry) => {
-        if (entry.slot?.rbnState?.status === 'ready') scheduleRbnCompareIndexBuild(entry.id, entry.slot);
-      });
-      const coachNav = dom.viewContainer.querySelectorAll('.rbn-coach-nav');
-      coachNav.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          const target = String(btn.dataset.report || 'competitor_coach').trim();
-          if (!target) return;
-          setActiveReportById(target, { silent: true });
-        });
-      });
-      const selects = dom.viewContainer.querySelectorAll('.rbn-signal-select');
-      selects.forEach((select) => {
-        select.addEventListener('change', () => {
-          const cont = String(select.dataset.continent || '').trim().toUpperCase() || 'N/A';
-          const value = normalizeSpotterBase(String(select.value || '').trim());
-          state.rbnCompareSignal = state.rbnCompareSignal && typeof state.rbnCompareSignal === 'object'
-            ? state.rbnCompareSignal
-            : { selectedByContinent: {} };
-          if (!state.rbnCompareSignal.selectedByContinent) state.rbnCompareSignal.selectedByContinent = {};
-          state.rbnCompareSignal.selectedByContinent[cont] = value;
-          const canvas = select.closest('.rbn-signal-card')?.querySelector('.rbn-signal-canvas');
-          if (canvas) canvas.dataset.spotter = value;
-          scheduleRbnCompareSignalDraw();
-        });
-      });
-      const copyButtons = dom.viewContainer.querySelectorAll('.rbn-signal-copy-btn');
-      copyButtons.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          copyRbnSignalCardImage(btn);
-        });
-      });
-      const resetButtons = dom.viewContainer.querySelectorAll('.rbn-signal-reset-btn');
-      resetButtons.forEach((btn) => {
-        btn.addEventListener('click', (evt) => {
-          evt.preventDefault();
-          const canvas = btn.closest('.rbn-signal-card')?.querySelector('.rbn-signal-canvas');
-          if (!(canvas instanceof HTMLCanvasElement)) return;
-          const bandKey = normalizeBandToken(state.globalBandFilter || '');
-          const key = getCanvasZoomKey(canvas, 'rbn', bandKey);
-          clearCanvasZoom('rbn', key, scheduleRbnCompareSignalDraw);
-          canvas.dataset.rbnDrawKey = '';
-        });
-      });
-      if (rbnCompareSignalResizeObserver) {
-        rbnCompareSignalResizeObserver.disconnect();
-        rbnCompareSignalResizeObserver = null;
-        rbnCompareSignalResizeRaf = 0;
-      }
-      const grid = dom.viewContainer ? dom.viewContainer.querySelector('.rbn-signal-grid') : null;
-      if (grid && typeof ResizeObserver === 'function') {
-        const schedule = () => {
-          if (rbnCompareSignalResizeRaf) return;
-          rbnCompareSignalResizeRaf = requestAnimationFrame(() => {
-            rbnCompareSignalResizeRaf = 0;
-            scheduleRbnCompareSignalDraw();
-          });
-        };
-        rbnCompareSignalResizeObserver = new ResizeObserver(schedule);
-        rbnCompareSignalResizeObserver.observe(grid);
-      }
-      if (rbnCompareSignalIntersectionObserver) {
-        rbnCompareSignalIntersectionObserver.disconnect();
-        rbnCompareSignalIntersectionObserver = null;
-      }
-      const canvases = Array.from(dom.viewContainer.querySelectorAll('.rbn-signal-canvas'));
-      canvases.forEach((c) => { if (c instanceof HTMLCanvasElement) c.dataset.rbnVisible = '0'; });
-      canvases.forEach((canvas) => {
-        bindDragZoomOnCanvas(canvas, {
-          chartType: 'rbn',
-          getBandKey: () => normalizeBandToken(state.globalBandFilter || ''),
-          onZoomChanged: scheduleRbnCompareSignalDraw
-        });
-      });
-      if (typeof IntersectionObserver === 'function') {
-        rbnCompareSignalIntersectionObserver = new IntersectionObserver((entries) => {
-          let touched = false;
-          entries.forEach((e) => {
-            const target = e.target;
-            if (!(target instanceof HTMLCanvasElement)) return;
-            if (e.isIntersecting) {
-              target.dataset.rbnVisible = '1';
-              touched = true;
-            }
-          });
-          if (touched) scheduleRbnCompareSignalDraw();
-        }, { root: null, rootMargin: '240px 0px', threshold: 0.01 });
-        canvases.forEach((c) => {
-          if (c instanceof HTMLCanvasElement) rbnCompareSignalIntersectionObserver.observe(c);
-        });
-      } else {
-        canvases.forEach((c) => { if (c instanceof HTMLCanvasElement) c.dataset.rbnVisible = '1'; });
-      }
-      populateRbnCompareSignalSpotterSelects();
-      scheduleRbnCompareSignalDraw();
-    }
+    getRbnCompareRuntime().bindRbnCompareSignalReport(reportId);
     if (reportId === 'load_logs') {
       const revealLoadPanel = () => {
         state.showLoadPanel = true;
@@ -18873,6 +18799,7 @@
     const coachRuntimeReady = loadCoachRuntimeModule();
     const spotsDataRuntimeReady = loadSpotsDataRuntimeModule();
     const spotsActionsRuntimeReady = loadSpotsActionsRuntimeModule();
+    const rbnCompareRuntimeReady = loadRbnCompareRuntimeModule();
     const investigationActionsRuntimeReady = loadInvestigationActionsRuntimeModule();
     const investigationWorkspaceReady = loadInvestigationWorkspaceModule();
     const sessionCodecReady = loadSessionCodecModule();
@@ -18888,6 +18815,7 @@
     await coachRuntimeReady;
     await spotsDataRuntimeReady;
     await spotsActionsRuntimeReady;
+    await rbnCompareRuntimeReady;
     await investigationActionsRuntimeReady;
     setupNavSearch();
     rebuildReports();

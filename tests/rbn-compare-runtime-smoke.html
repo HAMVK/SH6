@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RBN Compare Runtime Smoke</title>
+  <style>
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 1.25rem;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+    .status {
+      font-weight: 700;
+      margin-bottom: 0.75rem;
+    }
+    .status-pass { color: #166534; }
+    .status-fail { color: #b91c1c; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      border: 1px solid #cbd5e1;
+      background: #ffffff;
+      border-radius: 0.5rem;
+      padding: 0.75rem;
+      max-height: 70vh;
+      overflow: auto;
+    }
+    .check-list {
+      margin: 0 0 1rem 0;
+      padding: 0;
+      list-style: none;
+    }
+    .check-list li {
+      margin: 0.35rem 0;
+    }
+    .ok { color: #166534; }
+    .bad { color: #b91c1c; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>RBN Compare Runtime Smoke</h1>
+  <p>Checks the extracted RBN compare-signal runtime for report setup, observers, canvas wiring, and cleanup.</p>
+  <div id="status" class="status">RUNNING</div>
+  <ul id="checks" class="check-list"></ul>
+  <pre id="result">Waiting for test result...</pre>
+
+  <script type="module">
+    (async () => {
+      const statusEl = document.getElementById('status');
+      const listEl = document.getElementById('checks');
+      const resultEl = document.getElementById('result');
+
+      const checks = [];
+      const add = (name, ok, details = '') => checks.push({ name, ok: Boolean(ok), details });
+
+      function setResult(ok, payload) {
+        statusEl.textContent = ok ? 'PASS' : 'FAIL';
+        statusEl.className = `status ${ok ? 'status-pass' : 'status-fail'}`;
+        listEl.innerHTML = '';
+        checks.forEach((entry) => {
+          const li = document.createElement('li');
+          li.className = entry.ok ? 'ok' : 'bad';
+          li.textContent = `${entry.ok ? '✓' : '✗'} ${entry.name}${entry.ok || !entry.details ? '' : ` - ${entry.details}`}`;
+          listEl.appendChild(li);
+        });
+        resultEl.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      try {
+        const [mainSource, moduleSource, compareModule] = await Promise.all([
+          fetch('../main.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read main.js (${res.status})`);
+            return res.text();
+          }),
+          fetch('../modules/spots/rbn-compare-runtime.js', { cache: 'no-store' }).then(async (res) => {
+            if (!res.ok) throw new Error(`Unable to read modules/spots/rbn-compare-runtime.js (${res.status})`);
+            return res.text();
+          }),
+          import('../modules/spots/rbn-compare-runtime.js')
+        ]);
+
+        add('Main.js imports the RBN compare runtime module', mainSource.includes("const RBN_COMPARE_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-runtime.js?v=6.1.21';"));
+        add('Main.js preloads the RBN compare runtime during init', mainSource.includes('const rbnCompareRuntimeReady = loadRbnCompareRuntimeModule();') && mainSource.includes('await rbnCompareRuntimeReady;'));
+        add(
+          'Main.js delegates cleanup and report binding to the runtime',
+          mainSource.includes('getRbnCompareRuntime().teardownIfInactive(reportId);')
+            && mainSource.includes('getRbnCompareRuntime().bindRbnCompareSignalReport(reportId);')
+        );
+        add('RBN compare runtime exports the factory', moduleSource.includes('export function createRbnCompareRuntime'));
+
+        const resizeInstances = [];
+        const intersectionInstances = [];
+        const rafIds = [];
+        const canceledRaf = [];
+        const originalResizeObserver = window.ResizeObserver;
+        const originalIntersectionObserver = window.IntersectionObserver;
+        const originalRaf = window.requestAnimationFrame;
+        const originalCancelRaf = window.cancelAnimationFrame;
+
+        class MockResizeObserver {
+          constructor(callback) {
+            this.callback = callback;
+            this.observed = [];
+            this.disconnectCalls = 0;
+            resizeInstances.push(this);
+          }
+
+          observe(target) {
+            this.observed.push(target);
+          }
+
+          disconnect() {
+            this.disconnectCalls += 1;
+          }
+        }
+
+        class MockIntersectionObserver {
+          constructor(callback, options) {
+            this.callback = callback;
+            this.options = options;
+            this.observed = [];
+            this.disconnectCalls = 0;
+            intersectionInstances.push(this);
+          }
+
+          observe(target) {
+            this.observed.push(target);
+          }
+
+          disconnect() {
+            this.disconnectCalls += 1;
+          }
+        }
+
+        window.ResizeObserver = MockResizeObserver;
+        window.IntersectionObserver = MockIntersectionObserver;
+        window.requestAnimationFrame = (callback) => {
+          const id = rafIds.length + 1;
+          rafIds.push(id);
+          callback();
+          return id;
+        };
+        window.cancelAnimationFrame = (id) => {
+          canceledRaf.push(id);
+        };
+
+        const dom = {
+          viewContainer: document.createElement('div'),
+          rbnStatusRow: document.createElement('div')
+        };
+        dom.rbnStatusRow.className = 'hidden';
+        document.body.appendChild(dom.rbnStatusRow);
+        document.body.appendChild(dom.viewContainer);
+
+        const updateCalls = [];
+        const bindSpotCalls = [];
+        const indexBuildCalls = [];
+        const navCalls = [];
+        const drawCalls = [];
+        const copyCalls = [];
+        const clearCalls = [];
+        const zoomBindings = [];
+        const populateCalls = [];
+        const state = {
+          globalBandFilter: '20m',
+          rbnCompareSignal: null
+        };
+        const compareSlots = [
+          {
+            id: 'A',
+            slot: {
+              qsoData: { qsos: [{}] },
+              derived: { ready: true },
+              rbnState: { status: 'ready' }
+            }
+          },
+          {
+            id: 'B',
+            slot: {
+              qsoData: { qsos: [{}] },
+              derived: { ready: true },
+              rbnState: { status: 'loading' }
+            }
+          }
+        ];
+
+        const runtime = compareModule.createRbnCompareRuntime({
+          getDom: () => dom,
+          getState: () => state,
+          getActiveCompareSlots: () => compareSlots,
+          setActiveReportById: (reportId, options) => navCalls.push({ reportId, options }),
+          updateDataStatus: () => updateCalls.push('update'),
+          bindSpotControls: (source) => bindSpotCalls.push(source),
+          scheduleRbnCompareIndexBuild: (slotId) => indexBuildCalls.push(slotId),
+          normalizeSpotterBase: (value) => String(value || '').trim().toUpperCase().replace(/\s+/g, '').replace(/-\d+$/, ''),
+          normalizeBandToken: (value) => String(value || '').trim().toUpperCase(),
+          scheduleRbnCompareSignalDraw: () => drawCalls.push('draw'),
+          copyRbnSignalCardImage: (button) => copyCalls.push(button.dataset.continent || ''),
+          getCanvasZoomKey: (canvas, chartType, bandKey) => `${chartType}:${canvas.dataset.continent}:${canvas.dataset.spotter}:${bandKey}`,
+          clearCanvasZoom: (chartType, key, onZoomChanged) => {
+            clearCalls.push({ chartType, key });
+            if (typeof onZoomChanged === 'function') onZoomChanged();
+          },
+          bindDragZoomOnCanvas: (canvas, options) => zoomBindings.push({ continent: canvas.dataset.continent || '', chartType: options.chartType, bandKey: options.getBandKey() }),
+          populateRbnCompareSignalSpotterSelects: () => populateCalls.push('populate')
+        });
+
+        dom.viewContainer.innerHTML = `
+          <div class="rbn-signal-grid">
+            <article class="rbn-signal-card">
+              <button class="rbn-coach-nav" data-report="competitor_coach">Coach</button>
+              <select class="rbn-signal-select" data-continent="NA">
+                <option value="K1ABC" selected>K1ABC</option>
+                <option value="W3LPL-1">W3LPL-1</option>
+              </select>
+              <button class="rbn-signal-copy-btn" data-continent="NA">Copy</button>
+              <button class="rbn-signal-reset-btn">Reset</button>
+              <canvas class="rbn-signal-canvas" data-continent="NA" data-spotter="K1ABC" data-rbn-draw-key="stale"></canvas>
+            </article>
+          </div>
+        `;
+
+        const handled = runtime.bindRbnCompareSignalReport('rbn_compare_signal');
+        add(
+          'bindRbnCompareSignalReport wires the report shell and ready-slot indexing',
+          handled
+            && !dom.rbnStatusRow.classList.contains('hidden')
+            && updateCalls.length === 1
+            && bindSpotCalls.includes('rbn')
+            && indexBuildCalls.length === 1
+            && indexBuildCalls[0] === 'A'
+            && populateCalls.length === 1
+            && drawCalls.length >= 1,
+          JSON.stringify({ handled, updateCalls, bindSpotCalls, indexBuildCalls, populateCalls, drawCalls })
+        );
+
+        const coachBtn = dom.viewContainer.querySelector('.rbn-coach-nav');
+        coachBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        add('Coach navigation delegates to setActiveReportById', navCalls.length === 1 && navCalls[0].reportId === 'competitor_coach' && navCalls[0].options?.silent === true, JSON.stringify(navCalls));
+
+        const select = dom.viewContainer.querySelector('.rbn-signal-select');
+        const canvas = dom.viewContainer.querySelector('.rbn-signal-canvas');
+        select.value = 'W3LPL-1';
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        add(
+          'Spotter selection updates state, canvas dataset, and redraw scheduling',
+          state.rbnCompareSignal?.selectedByContinent?.NA === 'W3LPL'
+            && canvas.dataset.spotter === 'W3LPL'
+            && drawCalls.length >= 2,
+          JSON.stringify({ selectedByContinent: state.rbnCompareSignal?.selectedByContinent, canvasSpotter: canvas.dataset.spotter, drawCalls: drawCalls.length })
+        );
+
+        const copyBtn = dom.viewContainer.querySelector('.rbn-signal-copy-btn');
+        copyBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        add('Copy button delegates to the image export helper', copyCalls.includes('NA'), JSON.stringify(copyCalls));
+
+        const resetBtn = dom.viewContainer.querySelector('.rbn-signal-reset-btn');
+        canvas.dataset.rbnDrawKey = 'stale';
+        resetBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        add(
+          'Reset zoom clears the stored zoom key and schedules a redraw',
+          clearCalls.length === 1
+            && clearCalls[0].chartType === 'rbn'
+            && clearCalls[0].key === 'rbn:NA:W3LPL:20M'
+            && canvas.dataset.rbnDrawKey === '',
+          JSON.stringify({ clearCalls, drawCalls: drawCalls.length, rbnDrawKey: canvas.dataset.rbnDrawKey })
+        );
+
+        add(
+          'Canvas drag zoom and observers are bound for the compare grid',
+          zoomBindings.length === 1
+            && zoomBindings[0].chartType === 'rbn'
+            && zoomBindings[0].bandKey === '20M'
+            && resizeInstances.length === 1
+            && resizeInstances[0].observed.length === 1
+            && intersectionInstances.length === 1
+            && intersectionInstances[0].observed.length === 1,
+          JSON.stringify({ zoomBindings, resizeObserved: resizeInstances[0]?.observed.length || 0, intersectionObserved: intersectionInstances[0]?.observed.length || 0 })
+        );
+
+        intersectionInstances[0].callback([{ target: canvas, isIntersecting: true }]);
+        add(
+          'Intersection observer marks canvases visible and schedules redraws',
+          canvas.dataset.rbnVisible === '1' && drawCalls.length >= 4,
+          JSON.stringify({ rbnVisible: canvas.dataset.rbnVisible, drawCalls: drawCalls.length })
+        );
+
+        runtime.teardownIfInactive('main');
+        add(
+          'teardownIfInactive disconnects observers when the active report changes',
+          resizeInstances[0].disconnectCalls === 1 && intersectionInstances[0].disconnectCalls === 1,
+          JSON.stringify({ resizeDisconnects: resizeInstances[0].disconnectCalls, intersectionDisconnects: intersectionInstances[0].disconnectCalls, canceledRaf })
+        );
+
+        window.ResizeObserver = originalResizeObserver;
+        window.IntersectionObserver = originalIntersectionObserver;
+        window.requestAnimationFrame = originalRaf;
+        window.cancelAnimationFrame = originalCancelRaf;
+
+        const ok = checks.every((entry) => entry.ok);
+        setResult(ok, {
+          checks,
+          navCalls,
+          drawCalls: drawCalls.length,
+          zoomBindings,
+          resizeDisconnects: resizeInstances[0]?.disconnectCalls || 0,
+          intersectionDisconnects: intersectionInstances[0]?.disconnectCalls || 0
+        });
+      } catch (err) {
+        add('Smoke test execution completed', false, err && err.message ? err.message : String(err));
+        setResult(false, {
+          error: err && err.stack ? err.stack : String(err),
+          checks
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

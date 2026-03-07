@@ -101,9 +101,8 @@
         add('Main.js imports the spots actions runtime module', mainSource.includes("const SPOTS_ACTIONS_RUNTIME_MODULE_URL = './modules/spots/actions-runtime.js?v=6.1.21';"));
         add('Main.js preloads the spots actions runtime during init', mainSource.includes('const spotsActionsRuntimeReady = loadSpotsActionsRuntimeModule();') && mainSource.includes('await spotsActionsRuntimeReady;'));
         add(
-          'Main.js delegates standard spots reports and reuses shared controls for RBN compare signal',
-          mainSource.includes('getSpotsActionsRuntime().bindSpotReport(reportId);')
-            && mainSource.includes("getSpotsActionsRuntime().bindSpotControls('rbn');"),
+          'Main.js delegates the standard spots reports to the spots actions runtime',
+          mainSource.includes('getSpotsActionsRuntime().bindSpotReport(reportId);'),
           ''
         );
         add('Spots actions runtime exports the factory', moduleSource.includes('export function createSpotsActionsRuntime'));
