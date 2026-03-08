@@ -161,6 +161,7 @@ export function createRetainedReportRuntime(deps = {}) {
     refreshCurrentReportView,
     renderRetainedReportShell,
     renderRetainedVirtualTable,
+    setRetainedReportModel,
     withStaticVirtualTableRender
   };
 }

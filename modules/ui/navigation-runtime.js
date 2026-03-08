@@ -24,6 +24,15 @@ export function createNavigationRuntime(deps = {}) {
   let navSearchBound = false;
   let renderSeq = 0;
 
+  function escapeHtmlSafe(value) {
+    return String(value == null ? '' : value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
   function getDomSafe() {
     return getDom?.() || {};
   }
@@ -202,54 +211,69 @@ export function createNavigationRuntime(deps = {}) {
     requestAnimationFrame(() => {
       setTimeout(() => {
         if (seq !== renderSeq) return;
-        const startedAt = (typeof performance !== 'undefined' && typeof performance.now === 'function')
-          ? performance.now()
-          : Date.now();
-        const html = renderReport?.(report) || '';
-        const elapsedMs = (typeof performance !== 'undefined' && typeof performance.now === 'function')
-          ? (performance.now() - startedAt)
-          : (Date.now() - startedAt);
-        trackRenderPerf?.(report?.id, elapsedMs, html?.length || 0);
-        if (seq !== renderSeq) return;
-        destroyVirtualTableControllers?.();
-        const retainedKey = String(report?.id || '').split('::')[0];
-        const retainedRoot = isRetainedReport?.(retainedKey) && dom.viewContainer instanceof HTMLElement
-          ? dom.viewContainer.querySelector(`[data-retained-root="${escapeAttrSafe(retainedKey)}"]`)
-          : null;
-        if (retainedRoot instanceof HTMLElement) {
-          retainedRoot.innerHTML = renderRetainedReportContent?.(retainedKey) || '';
-        } else if (dom.viewContainer) {
-          dom.viewContainer.innerHTML = html;
-        }
-        bindReportInteractions?.(report?.id || '');
-        if (dom.loadPanel) {
-          if (report?.id === 'load_logs') {
-            dom.loadPanel.style.display = state.showLoadPanel ? 'block' : 'none';
-          } else {
-            dom.loadPanel.style.display = 'none';
-            state.showLoadPanel = false;
+        try {
+          const startedAt = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+            ? performance.now()
+            : Date.now();
+          const html = renderReport?.(report) || '';
+          const elapsedMs = (typeof performance !== 'undefined' && typeof performance.now === 'function')
+            ? (performance.now() - startedAt)
+            : (Date.now() - startedAt);
+          trackRenderPerf?.(report?.id, elapsedMs, html?.length || 0);
+          if (seq !== renderSeq) return;
+          destroyVirtualTableControllers?.();
+          const retainedKey = String(report?.id || '').split('::')[0];
+          const retainedRoot = isRetainedReport?.(retainedKey) && dom.viewContainer instanceof HTMLElement
+            ? dom.viewContainer.querySelector(`[data-retained-root="${escapeAttrSafe(retainedKey)}"]`)
+            : null;
+          if (retainedRoot instanceof HTMLElement) {
+            retainedRoot.innerHTML = renderRetainedReportContent?.(retainedKey) || '';
+          } else if (dom.viewContainer) {
+            dom.viewContainer.innerHTML = html;
+          }
+          bindReportInteractions?.(report?.id || '');
+          if (dom.loadPanel) {
+            if (report?.id === 'load_logs') {
+              dom.loadPanel.style.display = state.showLoadPanel ? 'block' : 'none';
+            } else {
+              dom.loadPanel.style.display = 'none';
+              state.showLoadPanel = false;
+            }
+          }
+          if (dom.bandRibbon) {
+            dom.bandRibbon.style.display = report?.id === 'load_logs' ? 'none' : '';
+          }
+          if (dom.periodFilterRibbon) {
+            const isPeriodReport = report && shouldPeriodFilterReport?.(report.id);
+            const shouldShow = report?.id !== 'load_logs' && isPeriodReport && state.analysisMode === analysisModeDxer;
+            dom.periodFilterRibbon.style.display = shouldShow ? '' : 'none';
+            if (shouldShow) {
+              updatePeriodRibbon?.();
+            }
+          }
+          const isLoadReport = report?.id === 'load_logs';
+          document.body.classList.toggle('landing-only', isLoadReport && !state.showLoadPanel);
+          document.body.classList.toggle('load-active', isLoadReport && state.showLoadPanel);
+          const landingPage = document.querySelector('.landing-page');
+          if (landingPage) {
+            landingPage.classList.toggle('is-hidden', isLoadReport && state.showLoadPanel);
+          }
+          scheduleAutosaveSession?.();
+        } catch (err) {
+          console.error(`SH6 render failed for report ${report?.id || ''}`, err);
+          if (dom.viewContainer) {
+            dom.viewContainer.innerHTML = `
+              <section class="state-card state-error">
+                <h3>Unable to render ${escapeHtmlSafe(title)}</h3>
+                <p>${escapeHtmlSafe(err && err.message ? err.message : 'Unknown render error.')}</p>
+              </section>
+            `;
+          }
+        } finally {
+          if (seq === renderSeq) {
+            clearLoadingState();
           }
         }
-        if (dom.bandRibbon) {
-          dom.bandRibbon.style.display = report?.id === 'load_logs' ? 'none' : '';
-        }
-        if (dom.periodFilterRibbon) {
-          const isPeriodReport = report && shouldPeriodFilterReport?.(report.id);
-          const shouldShow = report?.id !== 'load_logs' && isPeriodReport && state.analysisMode === analysisModeDxer;
-          dom.periodFilterRibbon.style.display = shouldShow ? '' : 'none';
-          if (shouldShow) {
-            updatePeriodRibbon?.();
-          }
-        }
-        const isLoadReport = report?.id === 'load_logs';
-        document.body.classList.toggle('landing-only', isLoadReport && !state.showLoadPanel);
-        document.body.classList.toggle('load-active', isLoadReport && state.showLoadPanel);
-        const landingPage = document.querySelector('.landing-page');
-        if (landingPage) {
-          landingPage.classList.toggle('is-hidden', isLoadReport && state.showLoadPanel);
-        }
-        clearLoadingState();
-        scheduleAutosaveSession?.();
       }, 0);
     });
   }

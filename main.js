@@ -2700,6 +2700,10 @@
     return invokeOptionalRuntime('retained runtime', () => getRetainedRuntime().renderRetainedVirtualTable(reportId, options), '');
   }
 
+  function setRetainedReportModel(reportId, model) {
+    return invokeOptionalRuntime('retained runtime', () => getRetainedRuntime().setRetainedReportModel(reportId, model));
+  }
+
   function buildSlotSnapshot(source) {
     if (!source) return createEmptyCompareSlot();
     return {
