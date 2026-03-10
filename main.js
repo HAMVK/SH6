@@ -14878,17 +14878,16 @@
 
   function renderChartBeamHeading() {
     if (!state.derived || !state.derived.headingSummary) return renderPlaceholder({ id: 'charts_beam_heading', title: 'Beam heading' });
-    const mode = normalizeChartMetricMode(state.chartMetricMode);
     const qsos = state.qsoData?.qsos || [];
     const pointsByIndex = getEffectivePointsByIndex(state.derived, qsos);
-    return `${renderChartModeControls('charts_beam_heading', mode)}${renderHeadingCompassPair(state.derived.headingSummary, {
+    return renderHeadingCompassPair(state.derived.headingSummary, {
       qsoTitle: 'QSO compass',
       pointsTitle: 'Points compass',
-      mode,
+      mode: CHART_MODE_ABSOLUTE,
       qsos,
       pointsByIndex,
       binSize: 10
-    })}`;
+    });
   }
 
   function renderChartBeamHeadingByHour() {
@@ -15688,7 +15687,7 @@
     return renderComparePanels(slots, htmlBlocks, 'charts_frequencies', { chart: true });
   }
 
-  function renderChartBeamHeadingForSlot(slot, maxOverride, mode = CHART_MODE_ABSOLUTE) {
+  function renderChartBeamHeadingForSlot(slot, maxOverride) {
     if (!slot.derived || !slot.derived.headingSummary) {
       return renderPlaceholder({ id: 'charts_beam_heading', title: 'Beam heading' });
     }
@@ -15697,7 +15696,7 @@
     return renderHeadingCompassPair(slot.derived.headingSummary, {
       qsoTitle: 'QSO compass',
       pointsTitle: 'Points compass',
-      mode,
+      mode: CHART_MODE_ABSOLUTE,
       qsoMaxValue: maxOverride.qsos,
       pointsMaxValue: maxOverride.points,
       qsos,
@@ -15707,11 +15706,10 @@
   }
 
   function renderChartBeamHeadingCompareAligned() {
-    const mode = normalizeChartMetricMode(state.chartMetricMode);
     const slots = getActiveCompareSnapshots();
     const maxValue = getHeadingMetricMax(
       slots.map((entry) => ({ qsos: entry.snapshot.qsoData?.qsos || [] })),
-      mode,
+      CHART_MODE_ABSOLUTE,
       { binSize: 10, metric: 'qsos' }
     );
     const pointsMaxValue = getHeadingMetricMax(
@@ -15719,13 +15717,13 @@
         qsos: entry.snapshot.qsoData?.qsos || [],
         pointsByIndex: getEffectivePointsByIndex(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || [])
       })),
-      mode,
+      CHART_MODE_ABSOLUTE,
       { binSize: 10, metric: 'points' }
     );
     const htmlBlocks = slots.map((entry) => (
-      entry.ready ? renderChartBeamHeadingForSlot(entry.snapshot, { qsos: maxValue, points: pointsMaxValue }, mode) : `<p>No ${entry.label} loaded.</p>`
+      entry.ready ? renderChartBeamHeadingForSlot(entry.snapshot, { qsos: maxValue, points: pointsMaxValue }) : `<p>No ${entry.label} loaded.</p>`
     ));
-    return `${renderChartModeControls('charts_beam_heading', mode)}${renderComparePanels(slots, htmlBlocks, 'charts_beam_heading', { chart: true })}`;
+    return renderComparePanels(slots, htmlBlocks, 'charts_beam_heading', { chart: true });
   }
 
   function buildHeadingByHourMap(derived) {
