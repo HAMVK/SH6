@@ -2,6 +2,12 @@
 
 Milestone-style history for SH6, based on reviewing diffs between version bump commits.
 
+## v6.2.16 (2026-03-10)
+- Beam heading: replace the over-detailed 1° compass with clearer 10° sectors, matching the existing drill-down table and keeping the directional summary readable.
+- Beam heading: add a second side-by-side compass for effective points by heading, so directional activity and score contribution can be compared directly.
+- Beam heading: keep the two compass cards responsive by stacking on smaller widths and rendering side-by-side on larger screens.
+- Version bump to `v6.2.16` and refresh cache-busting references in `index.html`, `main.js`, the session smoke script, and browser smoke expectations.
+
 ## v6.2.15 (2026-03-09)
 - Summary scoring: use effective/computed QSO points in `Summary`, so demo/archive logs without logged `POINTS` fields no longer show `Qs Pts = 0` when SH6 can derive points.
 - Beam heading: add a compass-style polar histogram for directional activity, keep the detailed per-band table for drill-down, and carry the same visual into compare panels.
