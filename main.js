@@ -1281,6 +1281,7 @@
   let callsignGridTimer = null;
   let callsignGridInFlight = false;
   let callsignLookupLastRequestTs = 0;
+  let viewContainerMapLinkHandler = null;
   let agentRuntimeModulePromise = null;
   let navigationRuntimeModulePromise = null;
   let navigationRuntime = null;
@@ -6455,6 +6456,24 @@
       }
     }
     return { totalBreakMin, breaks };
+  }
+
+  function buildBreakReportMetrics(derived, threshold) {
+    const minutesMap = new Map((derived?.minuteSeries || []).map((m) => [m.minute, m.qsos]));
+    const breakSummary = computeBreakSummary(minutesMap, threshold);
+    const minTs = Number(derived?.timeRange?.minTs);
+    const maxTs = Number(derived?.timeRange?.maxTs);
+    const participationMin = Number.isFinite(minTs) && Number.isFinite(maxTs) && maxTs >= minTs
+      ? Math.round((maxTs - minTs) / 60000)
+      : null;
+    const onAirMin = participationMin != null
+      ? Math.max(participationMin - breakSummary.totalBreakMin, 0)
+      : null;
+    return {
+      breakSummary,
+      participationMin,
+      onAirMin
+    };
   }
 
   function gridToLatLon(grid) {
@@ -16459,15 +16478,20 @@
       });
     });
 
-    const mapLinks = document.querySelectorAll('.map-link');
-    mapLinks.forEach((link) => {
-      link.addEventListener('click', (evt) => {
+    if (dom.viewContainer instanceof HTMLElement) {
+      if (typeof viewContainerMapLinkHandler === 'function') {
+        dom.viewContainer.removeEventListener('click', viewContainerMapLinkHandler);
+      }
+      viewContainerMapLinkHandler = (evt) => {
+        const link = evt.target instanceof Element ? evt.target.closest('.map-link') : null;
+        if (!(link instanceof HTMLElement) || !dom.viewContainer.contains(link)) return;
         evt.preventDefault();
         const scope = link.dataset.scope || 'map';
         const key = link.dataset.key || '';
         showMapView(scope, key);
-      });
-    });
+      };
+      dom.viewContainer.addEventListener('click', viewContainerMapLinkHandler);
+    }
 
     const kmzLinks = document.querySelectorAll('.kmz-link');
     kmzLinks.forEach((link) => {
@@ -17080,8 +17104,8 @@
   function renderBreaksForDerived(derived, slotLabel, options = {}) {
     if (!derived || !derived.minuteSeries) return renderPlaceholder({ id: 'breaks', title: 'Break time' });
     const threshold = state.breakThreshold || 60;
-    const minutesMap = new Map(derived.minuteSeries.map((m) => [m.minute, m.qsos]));
-    const breakSummary = computeBreakSummary(minutesMap, threshold);
+    const metrics = buildBreakReportMetrics(derived, threshold);
+    const breakSummary = metrics.breakSummary;
     const slotAttr = slotLabel ? ` data-break-slot="${slotLabel}"` : '';
     const showControls = options.showControls !== false;
     const slider = showControls ? `
@@ -17091,7 +17115,15 @@
         <span class="break-threshold-value"${slotAttr}>${threshold}</span>
       </div>
     ` : '';
-    if (!breakSummary.breaks.length) return `${slider}<p>No breaks detected.</p>`;
+    const totalHours = `${Math.floor(breakSummary.totalBreakMin / 60)}:${String(breakSummary.totalBreakMin % 60).padStart(2, '0')} (${breakSummary.totalBreakMin} min)`;
+    const onAirText = metrics.onAirMin != null
+      ? `${formatMinutes(metrics.onAirMin)} (${metrics.onAirMin} min)`
+      : 'N/A';
+    const summaryHtml = `
+      <p>Total break time (&gt;${threshold} min gaps): ${totalHours}</p>
+      <p><strong>ON AIR time</strong>: ${onAirText}</p>
+    `;
+    if (!breakSummary.breaks.length) return `${slider}${summaryHtml}<p>No breaks detected.</p>`;
     let accum = 0;
     const rows = breakSummary.breaks.map((b, idx) => {
       accum += b.minutes;
@@ -17102,10 +17134,9 @@
       const cls = idx % 2 === 0 ? 'td1' : 'td0';
       return `<tr class="${cls}"><td>${idx + 1}</td><td>${start}</td><td>${end}</td><td>${len}</td><td>${acc}</td></tr>`;
     }).join('');
-    const totalHours = `${Math.floor(breakSummary.totalBreakMin / 60)}:${String(breakSummary.totalBreakMin % 60).padStart(2, '0')} (${breakSummary.totalBreakMin} min)`;
     return `
       ${slider}
-      <p>Total break time (&gt;${threshold} min gaps): ${totalHours}</p>
+      ${summaryHtml}
       <table class="mtc" style="margin-top:5px;margin-bottom:10px;text-align:right;">
         <tr class="thc"><th>#</th><th>From</th><th>To</th><th>Break time,HH:mm</th><th>Accum.HH:mm</th></tr>
         ${rows}
