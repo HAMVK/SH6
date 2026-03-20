@@ -2,6 +2,11 @@
 
 Milestone-style history for SH6, based on reviewing diffs between version bump commits.
 
+## v6.2.18 (2026-03-20)
+- Archive mirror: switch archive shard and raw-log downloads from GitHub/jsDelivr to the Azure static-site mirror at `https://hclamirror20260320.z1.web.core.windows.net`.
+- Archive client: remove GitHub branch-specific raw URL construction and use generic archive base/fallback URL handling so mirror hosting is configurable.
+- Version bump to `v6.2.18` and refresh cache-busting references in `index.html`, `main.js`, the session smoke script, and browser smoke expectations.
+
 ## v6.2.17 (2026-03-13)
 - Maps: restore per-row `map` links in retained and virtualized reports by switching `.map-link` handling to delegated click binding on the report container, fixing `CQ zones` and covering the same pattern in other map-enabled tables.
 - Break time: add `ON AIR time`, calculated as each log's own participation span minus that log's break minutes for the current threshold.

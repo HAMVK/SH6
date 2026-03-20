@@ -2,7 +2,7 @@ export function createArchiveClient(deps = {}) {
   const {
     sqlJsBaseUrls,
     archiveBaseUrl,
-    archiveBranches,
+    archiveFallbackBaseUrls,
     normalizeCall,
     normalizeArchiveContestToken,
     normalizeArchiveModeToken,
@@ -147,11 +147,12 @@ export function createArchiveClient(deps = {}) {
       };
     }
     const urls = [];
-    const primary = `${archiveBaseUrl}/${path}`;
+    const normalizedPath = String(path || '').replace(/^\/+/, '');
+    const primary = `${String(archiveBaseUrl || '').replace(/\/+$/, '')}/${normalizedPath}`;
     urls.push(primary);
-    (archiveBranches || []).forEach((branch) => {
-      const rawUrl = `https://raw.githubusercontent.com/s53zo/Hamradio-Contest-logs-Archives/${branch}/${path}`;
-      if (!urls.includes(rawUrl)) urls.push(rawUrl);
+    (archiveFallbackBaseUrls || []).forEach((baseUrl) => {
+      const fallbackUrl = `${String(baseUrl || '').replace(/\/+$/, '')}/${normalizedPath}`;
+      if (!urls.includes(fallbackUrl)) urls.push(fallbackUrl);
     });
     try {
       const workerResult = await runEngineTask('archiveText', { urls });
