@@ -251,6 +251,7 @@ export function createCompareWorkspaceRenderer(deps = {}) {
       'continents',
       'kmz_files',
       'fields_map',
+      'run_sp_inband',
       'callsign_length',
       'callsign_structure',
       'zones_cq',
