@@ -230,6 +230,7 @@ export function createSessionCodec(deps = {}) {
     if (f.ituFilter) compact.i = f.ituFilter;
     const qsoRange = compactRangeObject(f.rangeFilter, 'start', 'end');
     if (qsoRange) compact.r = qsoRange;
+    if (f.rangeFilter?.excludeDupes) compact.rd = 1;
     const timeRange = compactRangeObject(f.timeRange, 'startTs', 'endTs');
     if (timeRange) compact.y = timeRange;
     const headingRange = compactRangeObject(f.headingRange, 'start', 'end');
@@ -256,6 +257,7 @@ export function createSessionCodec(deps = {}) {
     if (typeof compact.q === 'string') out.cqFilter = compact.q;
     if (typeof compact.i === 'string') out.ituFilter = compact.i;
     out.rangeFilter = inflateRangeObject(compact.r, 'start', 'end');
+    if (out.rangeFilter && compact.rd === 1) out.rangeFilter.excludeDupes = true;
     out.timeRange = inflateRangeObject(compact.y, 'startTs', 'endTs');
     out.headingRange = inflateRangeObject(compact.h, 'start', 'end');
     out.stationQsoRange = inflateRangeObject(compact.u, 'min', 'max');

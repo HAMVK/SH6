@@ -2,6 +2,12 @@
 
 Milestone-style history for SH6, based on reviewing diffs between version bump commits.
 
+## v6.2.23 (2026-03-23)
+- Rates: fix the `QSO rates` drilldown so clicking a best-window count opens the same non-dupe QSO set used by the rate calculation, instead of the full raw QSO-number span including dupes.
+- Log filter note: label those drilldowns as `non-dupes only` so the filtered Log view explains why the count matches the rate table.
+- Session/compare filter plumbing: preserve the rate-window non-dupe flag through compare filtering and compact session state.
+- Version bump to `v6.2.23` and refresh cache-busting references in `main.js`.
+
 ## v6.2.22 (2026-03-23)
 - Main report: show the effective multi-op category by combining `CATEGORY-OPERATOR` with `CATEGORY-TRANSMITTER`, so `MULTI-OP` logs display as `M/S`, `M/2`, or `M/M` instead of losing the transmitter class.
 - Single-op display: keep existing single-op category rendering unchanged, because the multi-transmitter shorthand applies only to multi-op entries.

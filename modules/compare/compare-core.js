@@ -69,6 +69,7 @@
       if (rangeFilter && Number.isFinite(rangeFilter.start) && Number.isFinite(rangeFilter.end)) {
         const qsoNumber = Number(q.qsoNumber);
         if (!Number.isFinite(qsoNumber) || qsoNumber < rangeFilter.start || qsoNumber > rangeFilter.end) continue;
+        if (rangeFilter.excludeDupes && q.isDupe) continue;
       }
       if (timeRange && Number.isFinite(timeRange.startTs) && Number.isFinite(timeRange.endTs)) {
         if (!Number.isFinite(q.ts) || q.ts < timeRange.startTs || q.ts > timeRange.endTs) continue;
