@@ -148,7 +148,7 @@
 
   let reports = [];
 
-  const APP_VERSION = 'v6.2.21';
+  const APP_VERSION = 'v6.2.22';
   const UI_THEME_NT = 'nt';
   const CHART_MODE_ABSOLUTE = 'absolute';
   const CHART_MODE_NORMALIZED = 'normalized';
@@ -4532,6 +4532,24 @@
         default: return ch;
       }
     });
+  }
+
+  function getMultiOpCategoryShortLabel(contestMeta) {
+    const operator = String(contestMeta?.categoryOperator || contestMeta?.category || '').trim().toUpperCase();
+    const transmitter = String(contestMeta?.categoryTransmitter || '').trim().toUpperCase();
+    if (!operator.includes('MULTI')) return '';
+    if (transmitter === 'ONE') return 'M/S';
+    if (transmitter === 'TWO') return 'M/2';
+    if (transmitter === 'UNLIMITED') return 'M/M';
+    if (transmitter === 'LIMITED') return 'M/L';
+    return '';
+  }
+
+  function formatContestCategoryDisplay(contestMeta) {
+    const operator = String(contestMeta?.categoryOperator || contestMeta?.category || '').trim();
+    if (!operator) return 'N/A';
+    const multiShort = getMultiOpCategoryShortLabel(contestMeta);
+    return multiShort ? `${operator} (${multiShort})` : operator;
   }
 
   function escapeAttr(value) {
@@ -9149,7 +9167,8 @@
     const locator = escapeHtml(state.derived.station?.source === 'grid' ? state.derived.station.value : 'N/A');
     const operators = escapeHtml(state.derived.operatorsSummary?.map((o) => o.op).join(' ') || 'N/A');
     const contest = escapeHtml(state.derived.contestMeta?.contestId || 'N/A');
-    const category = escapeHtml(state.derived.contestMeta?.category || 'N/A');
+    const categoryLabel = formatContestCategoryDisplay(state.derived.contestMeta);
+    const category = escapeHtml(categoryLabel);
     const scoring = state.derived.scoring || {};
     const claimedHeader = Number.isFinite(scoring.claimedScoreHeader)
       ? scoring.claimedScoreHeader
@@ -9238,7 +9257,7 @@
       [
         `Callsign ${stationCallRaw || 'N/A'}`,
         `${state.analysisMode === ANALYSIS_MODE_DXER ? 'Event' : 'Contest'} ${state.derived.contestMeta?.contestId || 'N/A'}`,
-        `Category ${state.derived.contestMeta?.category || 'N/A'}`,
+        `Category ${categoryLabel}`,
         `${formatNumberSh6(totalQsos)} QSOs`
       ]
     );

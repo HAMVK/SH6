@@ -2,6 +2,11 @@
 
 Milestone-style history for SH6, based on reviewing diffs between version bump commits.
 
+## v6.2.22 (2026-03-23)
+- Main report: show the effective multi-op category by combining `CATEGORY-OPERATOR` with `CATEGORY-TRANSMITTER`, so `MULTI-OP` logs display as `M/S`, `M/2`, or `M/M` instead of losing the transmitter class.
+- Single-op display: keep existing single-op category rendering unchanged, because the multi-transmitter shorthand applies only to multi-op entries.
+- Version bump to `v6.2.22` and refresh cache-busting references in `main.js`.
+
 ## v6.2.21 (2026-03-23)
 - `RUN vs S&P vs INBAND`: remove the `Top RUN freqs` column to keep the table focused on the operating-style counts and percentages.
 - Compare layout: render `RUN vs S&P vs INBAND` in the existing 2-column quad grid when 3 or 4 logs are loaded, instead of stretching to 3 or 4 columns.
