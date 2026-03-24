@@ -14,6 +14,7 @@ export function createSessionCodec(deps = {}) {
     defaultCompareFocus,
     normalizeAnalysisMode,
     normalizeCompareScoreMode,
+    normalizeWpxColumnMode,
     normalizePeriodYears,
     normalizePeriodMonths,
     cloneCompareFocus,
@@ -78,6 +79,9 @@ export function createSessionCodec(deps = {}) {
       compareSyncEnabled: state.compareSyncEnabled,
       compareStickyEnabled: state.compareStickyEnabled,
       compareTimeRangeLock: cloneTsRange(state.compareTimeRangeLock),
+      wpxColumnMode: typeof normalizeWpxColumnMode === 'function'
+        ? normalizeWpxColumnMode(state.wpxColumnMode)
+        : state.wpxColumnMode,
       compareFocus: state.compareFocus,
       globalBandFilter: state.globalBandFilter || '',
       breakThreshold: state.breakThreshold,
@@ -382,6 +386,13 @@ export function createSessionCodec(deps = {}) {
     if (Number.isFinite(compareStart) && compareStart !== 0) compact.w = compareStart;
     const compareSize = Number(payload.compareLogWindowSize);
     if (Number.isFinite(compareSize) && compareSize !== 1000) compact.x = compareSize;
+    const wpxColumnMode = typeof normalizeWpxColumnMode === 'function'
+      ? normalizeWpxColumnMode(payload.wpxColumnMode)
+      : payload.wpxColumnMode;
+    const defaultWpxColumnMode = typeof normalizeWpxColumnMode === 'function'
+      ? normalizeWpxColumnMode('')
+      : '';
+    if (wpxColumnMode && wpxColumnMode !== defaultWpxColumnMode) compact.wp = wpxColumnMode;
     if (Array.isArray(payload.globalYearsFilter) && payload.globalYearsFilter.length) {
       compact[periodFilterCompactYears] = normalizePeriodYears(payload.globalYearsFilter);
     }
@@ -429,6 +440,9 @@ export function createSessionCodec(deps = {}) {
       logPage: Number.isFinite(logPage) ? logPage : 0,
       compareLogWindowStart: Number.isFinite(compareStart) ? compareStart : 0,
       compareLogWindowSize: Number.isFinite(compareSize) ? compareSize : 1000,
+      wpxColumnMode: typeof normalizeWpxColumnMode === 'function'
+        ? normalizeWpxColumnMode(compact.wp)
+        : compact.wp,
       logFilters: inflateCompactLogFilters(compact.l),
       slots: inflateCompactSlots(compact.s)
     };
