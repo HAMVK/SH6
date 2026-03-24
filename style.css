@@ -2985,11 +2985,21 @@ body.analysis-mode-dxer .load-tip-badge {
   margin: 8px;
 }
 
+.session-primary-row {
+  align-items: flex-start;
+}
+
 .utility-primary-btn {
   min-height: 34px;
   padding: 6px 12px;
   border-radius: 7px;
   font-weight: 700;
+}
+
+.session-primary-row .utility-primary-btn {
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
 }
 
 .utility-primary-row-stacked {
@@ -5088,6 +5098,15 @@ table.mtc.countries-month-heatmap-table {
 
   .utility-primary-btn {
     width: 100%;
+  }
+
+  .session-primary-row {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .session-primary-row .utility-primary-btn {
+    width: auto;
   }
 }
 

@@ -9745,7 +9745,7 @@
     return `
       ${noticeHtml}
       <div class="utility-callout"><b>Session</b>: save or restore full comparisons and settings.</div>
-      <div class="utility-primary-row utility-primary-row-stacked">
+      <div class="utility-primary-row session-primary-row">
         <button type="button" class="button utility-primary-btn session-permalink">Copy permalink</button>
         <button type="button" class="button utility-primary-btn session-save">Save session</button>
         <button type="button" class="button utility-primary-btn session-load">Load session</button>
