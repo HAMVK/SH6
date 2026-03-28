@@ -150,7 +150,7 @@
 
   let reports = [];
 
-  const APP_VERSION = 'v6.2.25';
+  const APP_VERSION = 'v6.2.26';
   const UI_THEME_NT = 'nt';
   const CHART_MODE_ABSOLUTE = 'absolute';
   const CHART_MODE_NORMALIZED = 'normalized';
@@ -982,6 +982,7 @@
     if (!migrated || typeof migrated !== 'object') return;
     clearAnalysisModeSuggestion();
     const hadAnalysisMode = Object.prototype.hasOwnProperty.call(migrated, 'analysisMode');
+    const pendingPermalinkLocalUploads = [];
     state.sessionNotice = [];
     state.allCallsignsCountryFilter = '';
     state.analysisMode = normalizeAnalysisMode(migrated.analysisMode) || ANALYSIS_MODE_DEFAULT;
@@ -1033,6 +1034,10 @@
       if (options.fromPermalink && data.sourceType === 'local') {
         const label = data.file?.name ? ` (${data.file.name})` : '';
         state.sessionNotice.push(`Permalink needs local log upload for slot ${id}${label}.`);
+        pendingPermalinkLocalUploads.push({
+          id,
+          fileName: data.file?.name || ''
+        });
         if (id === 'A') resetMainSlot();
         else resetCompareSlot(id);
         continue;
@@ -1071,6 +1076,7 @@
     const logIndex = reports.findIndex((r) => r.id === 'log');
     if (logIndex >= 0) setActiveReport(logIndex);
     scheduleAutosaveSession();
+    queuePermalinkLogPrompts(options.fromPermalink ? pendingPermalinkLocalUploads : []);
   }
 
   function buildPermalink() {
@@ -2841,12 +2847,123 @@
     return dom.fileStatus;
   }
 
+  function getFileInputElBySlot(slotId) {
+    const key = String(slotId || 'A').toUpperCase();
+    if (key === 'B') return dom.fileInputB;
+    if (key === 'C') return dom.fileInputC;
+    if (key === 'D') return dom.fileInputD;
+    return dom.fileInput;
+  }
+
   function getSlotStatusElBySlot(slotId) {
     const key = String(slotId || 'A').toUpperCase();
     if (key === 'B') return dom.slotStatusB;
     if (key === 'C') return dom.slotStatusC;
     if (key === 'D') return dom.slotStatusD;
     return dom.slotStatusA;
+  }
+
+  let permalinkLogPromptQueue = [];
+  let permalinkLogPromptOverlay = null;
+  let permalinkLogPromptKeyHandler = null;
+
+  function closePermalinkLogPrompt() {
+    if (permalinkLogPromptOverlay) {
+      permalinkLogPromptOverlay.remove();
+      permalinkLogPromptOverlay = null;
+    }
+    if (permalinkLogPromptKeyHandler) {
+      document.removeEventListener('keydown', permalinkLogPromptKeyHandler);
+      permalinkLogPromptKeyHandler = null;
+    }
+  }
+
+  function showNextPermalinkLogPrompt() {
+    closePermalinkLogPrompt();
+    const entry = permalinkLogPromptQueue[0];
+    if (!entry) return;
+    const slotId = String(entry.id || 'A').toUpperCase();
+    const slotLabel = COMPARE_SLOT_LABELS[slotId] || `Log ${slotId}`;
+    const fileLabel = entry.fileName ? ` (${entry.fileName})` : '';
+    const remainingCount = Math.max(0, permalinkLogPromptQueue.length - 1);
+    const remainingText = remainingCount
+      ? ` ${remainingCount} more local log${remainingCount === 1 ? '' : 's'} remain after this.`
+      : '';
+    const overlay = document.createElement('div');
+    overlay.id = 'permalinkLogPrompt';
+    overlay.className = 'export-dialog-overlay no-print';
+    overlay.innerHTML = `
+      <div class="export-dialog">
+        <div class="export-dialog-head">
+          <strong>Upload log for permalink?</strong>
+        </div>
+        <p>${escapeHtml(`${slotLabel}${fileLabel} was loaded from a local file, so SH6 cannot restore it automatically from the permalink. Upload the log now, or continue without it.${remainingText}`)}</p>
+        <div class="export-dialog-footer">
+          <button type="button" id="permalinkLogUpload" class="button">Upload log</button>
+          <button type="button" id="permalinkLogSkip" class="button">Continue without log</button>
+        </div>
+      </div>
+    `;
+    const skip = () => {
+      if (permalinkLogPromptQueue.length) permalinkLogPromptQueue.shift();
+      closePermalinkLogPrompt();
+      showNextPermalinkLogPrompt();
+    };
+    document.body.appendChild(overlay);
+    permalinkLogPromptOverlay = overlay;
+    permalinkLogPromptKeyHandler = (evt) => {
+      if (evt.key !== 'Escape') return;
+      evt.preventDefault();
+      skip();
+    };
+    document.addEventListener('keydown', permalinkLogPromptKeyHandler);
+    overlay.addEventListener('click', (evt) => {
+      if (evt.target === overlay) skip();
+    });
+    const uploadBtn = overlay.querySelector('#permalinkLogUpload');
+    const skipBtn = overlay.querySelector('#permalinkLogSkip');
+    if (uploadBtn) {
+      uploadBtn.addEventListener('click', () => {
+        const input = getFileInputElBySlot(slotId);
+        if (!input) {
+          showOverlayNotice(`Unable to open the file picker for ${slotLabel}.`, 2600);
+          skip();
+          return;
+        }
+        input.value = '';
+        input.click();
+      });
+      uploadBtn.focus();
+    }
+    if (skipBtn) skipBtn.addEventListener('click', skip);
+  }
+
+  function queuePermalinkLogPrompts(entries) {
+    permalinkLogPromptQueue = Array.isArray(entries)
+      ? entries
+        .map((entry) => ({
+          id: String(entry?.id || '').toUpperCase(),
+          fileName: String(entry?.fileName || '')
+        }))
+        .filter((entry) => entry.id)
+      : [];
+    if (!permalinkLogPromptQueue.length) {
+      closePermalinkLogPrompt();
+      return;
+    }
+    showNextPermalinkLogPrompt();
+  }
+
+  function resolvePermalinkLogPromptForSlot(slotId) {
+    const key = String(slotId || '').toUpperCase();
+    if (!key || !permalinkLogPromptQueue.length) return;
+    const index = permalinkLogPromptQueue.findIndex((entry) => entry.id === key);
+    if (index === -1) return;
+    permalinkLogPromptQueue.splice(index, 1);
+    if (index === 0) {
+      closePermalinkLogPrompt();
+      showNextPermalinkLogPrompt();
+    }
   }
 
   function getRepoCompactBySlot(slotId) {
@@ -7278,22 +7395,27 @@
     if (!isSupportedLogFile(file)) {
       if (statusEl) statusEl.textContent = `Unsupported file type. Please use ${LOG_EXTENSIONS_LABEL}.`;
       showInvalidFileAlert(`Invalid file type. Please upload ${LOG_EXTENSIONS_LABEL}.`);
-      return;
+      return null;
     }
     try {
       const text = await file.text();
       const parsed = await applyLoadedLogToSlot(slotId, text, file.name, file.size, sourceLabel || 'Uploaded', statusEl);
       if (parsed && parsed.type === 'unknown') {
         showInvalidFileAlert('Invalid log file. The format could not be recognized.');
+        return null;
       } else if (parsed && parsed.qsos && parsed.qsos.length === 0) {
         showInvalidFileAlert('No QSOs parsed. Check that the file is a valid ADIF or CBF log.');
+        return null;
       }
+      if (parsed) resolvePermalinkLogPromptForSlot(slotId);
+      return parsed || null;
     } catch (err) {
       console.error('File parse failed:', err);
       if (statusEl) {
         statusEl.textContent = `Failed to parse ${file.name}: ${err && err.message ? err.message : 'unknown error'}`;
       }
       showInvalidFileAlert('Failed to read the log file. Please try a different file.');
+      return null;
     }
   }
 
@@ -7336,7 +7458,11 @@
       if (!file) return;
       if (statusEl) statusEl.textContent = `Loading ${file.name}...`;
       setSlotAction(slotId, 'upload');
-      await loadLogFile(file, slotId, statusEl, 'Uploaded');
+      try {
+        await loadLogFile(file, slotId, statusEl, 'Uploaded');
+      } finally {
+        evt.target.value = '';
+      }
     });
     const dropEl = inputEl.closest('.drop-zone');
     if (dropEl) setupFileDropZone(dropEl, statusEl, slotId);

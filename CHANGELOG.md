@@ -2,6 +2,12 @@
 
 Milestone-style history for SH6, based on reviewing diffs between version bump commits.
 
+## v6.2.26 (2026-03-28)
+- Permalink restore: when a saved session points to local logs, SH6 now prompts per slot with `Upload log` or `Continue without log` instead of only showing a passive notice and leaving the slot empty without a clear next step.
+- Prompt flow: queue local-log prompts one at a time during permalink restore, route `Upload log` into the existing slot-specific upload picker, and allow `Esc`/backdrop dismiss to continue without attaching the log.
+- Upload handling: resolve the prompt queue from the shared log-load path so file picker uploads and drag/drop uploads both advance the restore flow correctly after a successful load.
+- Version bump to `v6.2.26` and refresh cache-busting references in `main.js`.
+
 ## v6.2.25 (2026-03-24)
 - WPX by hour sheet: fix a startup regression where `isCqWpxContest()` called the coach-only helper `normalizeContestIdForCoach`, which is not available in `main.js` during app startup.
 - WPX report gating: switch the contest check to the local archive/contest normalization helpers so the report list can be rebuilt safely for demo, archive, and uploaded logs.
