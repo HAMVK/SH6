@@ -2,16 +2,21 @@
 
 Milestone-style history for SH6, based on reviewing diffs between version bump commits.
 
-## v6.2.27 (2026-03-28)
-- Permalink restore: batch slot loading so SH6 rebuilds reports once at the end instead of repainting the full workspace after every restored log.
-- Restore UX: show a temporary `Restoring permalink...` overlay while permalink state is being applied, then show any local-log upload prompts only after the restore pass finishes.
-- Report landing: keep the existing final jump to `Log` unchanged; this release only removes visible restore flicker and intermediate refresh churn.
-- Version bump to `v6.2.27` and refresh cache-busting references in `main.js`.
+## v6.2.29 (2026-04-01)
+- Rates report: add per-operator rates overview when OPERATOR is present per QSO, reporting best QSO and point windows for each operator.
+- Per-operator rates gating: only show this section when per-QSO operator data exists to avoid noise in single-operator inferred logs.
+- Version bump to `v6.2.29` and refresh cache-busting references in `index.html`, `main.js`.
 
 ## v6.2.28 (2026-04-01)
 - Break time report: add per-operator break-time overview when `OPERATOR` is present per QSO (ADIF/CABRILLO/CBF fallback), showing Participation, break time, break count, and ON AIR.
 - Data handling: avoid showing per-operator break summaries when operator is not known per QSO, so single-operator inferred logs stay clean.
 - Version bump to `v6.2.28` and refresh cache-busting references in `index.html`, `main.js`.
+
+## v6.2.27 (2026-03-28)
+- Permalink restore: batch slot loading so SH6 rebuilds reports once at the end instead of repainting the full workspace after every restored log.
+- Restore UX: show a temporary `Restoring permalink...` overlay while permalink state is being applied, then show any local-log upload prompts only after the restore pass finishes.
+- Report landing: keep the existing final jump to `Log` unchanged; this release only removes visible restore flicker and intermediate refresh churn.
+- Version bump to `v6.2.27` and refresh cache-busting references in `main.js`.
 
 ## v6.2.26 (2026-03-28)
 - Permalink restore: when a saved session points to local logs, SH6 now prompts per slot with `Upload log` or `Continue without log` instead of only showing a passive notice and leaving the slot empty without a clear next step.

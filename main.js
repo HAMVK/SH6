@@ -150,7 +150,7 @@
 
   let reports = [];
 
-  const APP_VERSION = 'v6.2.28';
+  const APP_VERSION = 'v6.2.29';
   const UI_THEME_NT = 'nt';
   const CHART_MODE_ABSOLUTE = 'absolute';
   const CHART_MODE_NORMALIZED = 'normalized';
@@ -196,34 +196,34 @@
   ]);
   const COMPARE_PERSPECTIVE_STORAGE_KEY = 'sh6_compare_perspectives_v1';
   const COMPARE_PERSPECTIVE_LIMIT = 12;
-  const COMPARE_WORKSPACE_MODULE_URL = './modules/compare/workspace-ui.js?v=6.2.28';
-  const COMPARE_CONTROLLER_RUNTIME_MODULE_URL = './modules/compare/controller-runtime.js?v=6.2.28';
-  const RETAINED_RUNTIME_MODULE_URL = './modules/reports/retained-runtime.js?v=6.2.28';
-  const NAVIGATION_RUNTIME_MODULE_URL = './modules/ui/navigation-runtime.js?v=6.2.28';
-  const STORAGE_RUNTIME_MODULE_URL = './modules/storage/runtime.js?v=6.2.28';
-  const ARCHIVE_CLIENT_MODULE_URL = './modules/archive/client.js?v=6.2.28';
-  const ARCHIVE_SEARCH_RUNTIME_MODULE_URL = './modules/archive/search-runtime.js?v=6.2.28';
-  const LOAD_PANEL_RUNTIME_MODULE_URL = './modules/ui/load-panel-runtime.js?v=6.2.28';
-  const ANALYSIS_CONTROLS_RUNTIME_MODULE_URL = './modules/ui/analysis-controls-runtime.js?v=6.2.28';
-  const COACH_RUNTIME_MODULE_URL = './modules/coach/runtime.js?v=6.2.28';
-  const CANVAS_ZOOM_RUNTIME_MODULE_URL = './modules/ui/canvas-zoom-runtime.js?v=6.2.28';
-  const RBN_SIGNAL_EXPORT_RUNTIME_MODULE_URL = './modules/spots/signal-export-runtime.js?v=6.2.28';
-  const SPOTS_COMPARE_RUNTIME_MODULE_URL = './modules/spots/compare-runtime.js?v=6.2.28';
-  const SPOTS_DRILLDOWN_RUNTIME_MODULE_URL = './modules/spots/drilldown-runtime.js?v=6.2.28';
-  const SPOTS_COACH_SUMMARY_RUNTIME_MODULE_URL = './modules/spots/coach-summary-runtime.js?v=6.2.28';
-  const SPOTS_DIAGNOSTICS_RUNTIME_MODULE_URL = './modules/spots/diagnostics-runtime.js?v=6.2.28';
-  const SPOTS_CHARTS_RUNTIME_MODULE_URL = './modules/spots/charts-runtime.js?v=6.2.28';
-  const SPOTS_DATA_RUNTIME_MODULE_URL = './modules/spots/data-runtime.js?v=6.2.28';
-  const SPOTS_ACTIONS_RUNTIME_MODULE_URL = './modules/spots/actions-runtime.js?v=6.2.28';
-  const RBN_COMPARE_CHART_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-chart-runtime.js?v=6.2.28';
-  const RBN_COMPARE_VIEW_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-view-runtime.js?v=6.2.28';
-  const RBN_COMPARE_MODEL_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-model-runtime.js?v=6.2.28';
-  const RBN_COMPARE_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-runtime.js?v=6.2.28';
-  const INVESTIGATION_ACTIONS_RUNTIME_MODULE_URL = './modules/ui/investigation-actions-runtime.js?v=6.2.28';
-  const INVESTIGATION_WORKSPACE_MODULE_URL = './modules/reports/investigation-workspace.js?v=6.2.28';
-  const SESSION_CODEC_MODULE_URL = './modules/session/codec.js?v=6.2.28';
-  const SESSION_PERSPECTIVES_MODULE_URL = './modules/session/perspectives.js?v=6.2.28';
-  const EXPORT_RUNTIME_MODULE_URL = './modules/export/runtime.js?v=6.2.28';
+  const COMPARE_WORKSPACE_MODULE_URL = './modules/compare/workspace-ui.js?v=6.2.29';
+  const COMPARE_CONTROLLER_RUNTIME_MODULE_URL = './modules/compare/controller-runtime.js?v=6.2.29';
+  const RETAINED_RUNTIME_MODULE_URL = './modules/reports/retained-runtime.js?v=6.2.29';
+  const NAVIGATION_RUNTIME_MODULE_URL = './modules/ui/navigation-runtime.js?v=6.2.29';
+  const STORAGE_RUNTIME_MODULE_URL = './modules/storage/runtime.js?v=6.2.29';
+  const ARCHIVE_CLIENT_MODULE_URL = './modules/archive/client.js?v=6.2.29';
+  const ARCHIVE_SEARCH_RUNTIME_MODULE_URL = './modules/archive/search-runtime.js?v=6.2.29';
+  const LOAD_PANEL_RUNTIME_MODULE_URL = './modules/ui/load-panel-runtime.js?v=6.2.29';
+  const ANALYSIS_CONTROLS_RUNTIME_MODULE_URL = './modules/ui/analysis-controls-runtime.js?v=6.2.29';
+  const COACH_RUNTIME_MODULE_URL = './modules/coach/runtime.js?v=6.2.29';
+  const CANVAS_ZOOM_RUNTIME_MODULE_URL = './modules/ui/canvas-zoom-runtime.js?v=6.2.29';
+  const RBN_SIGNAL_EXPORT_RUNTIME_MODULE_URL = './modules/spots/signal-export-runtime.js?v=6.2.29';
+  const SPOTS_COMPARE_RUNTIME_MODULE_URL = './modules/spots/compare-runtime.js?v=6.2.29';
+  const SPOTS_DRILLDOWN_RUNTIME_MODULE_URL = './modules/spots/drilldown-runtime.js?v=6.2.29';
+  const SPOTS_COACH_SUMMARY_RUNTIME_MODULE_URL = './modules/spots/coach-summary-runtime.js?v=6.2.29';
+  const SPOTS_DIAGNOSTICS_RUNTIME_MODULE_URL = './modules/spots/diagnostics-runtime.js?v=6.2.29';
+  const SPOTS_CHARTS_RUNTIME_MODULE_URL = './modules/spots/charts-runtime.js?v=6.2.29';
+  const SPOTS_DATA_RUNTIME_MODULE_URL = './modules/spots/data-runtime.js?v=6.2.29';
+  const SPOTS_ACTIONS_RUNTIME_MODULE_URL = './modules/spots/actions-runtime.js?v=6.2.29';
+  const RBN_COMPARE_CHART_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-chart-runtime.js?v=6.2.29';
+  const RBN_COMPARE_VIEW_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-view-runtime.js?v=6.2.29';
+  const RBN_COMPARE_MODEL_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-model-runtime.js?v=6.2.29';
+  const RBN_COMPARE_RUNTIME_MODULE_URL = './modules/spots/rbn-compare-runtime.js?v=6.2.29';
+  const INVESTIGATION_ACTIONS_RUNTIME_MODULE_URL = './modules/ui/investigation-actions-runtime.js?v=6.2.29';
+  const INVESTIGATION_WORKSPACE_MODULE_URL = './modules/reports/investigation-workspace.js?v=6.2.29';
+  const SESSION_CODEC_MODULE_URL = './modules/session/codec.js?v=6.2.29';
+  const SESSION_PERSPECTIVES_MODULE_URL = './modules/session/perspectives.js?v=6.2.29';
+  const EXPORT_RUNTIME_MODULE_URL = './modules/export/runtime.js?v=6.2.29';
   const SQLJS_BASE_URLS = [
     'https://cdn.jsdelivr.net/npm/sql.js@1.8.0/dist/',
     'https://unpkg.com/sql.js@1.8.0/dist/'
@@ -12979,12 +12979,168 @@
     `;
   }
 
+  function computePeakPointsWindowFromQsos(qsos, pointsByQso, windowMinutes) {
+    const windowMs = windowMinutes * 60000;
+    const data = (qsos || [])
+      .map((q) => {
+        const qsoNumber = q?.qsoNumber;
+        const pointsRaw = Number.isFinite(pointsByQso.get(qsoNumber))
+          ? pointsByQso.get(qsoNumber)
+          : Number(q?.points);
+        return {
+          ts: q?.ts,
+          isDupe: Boolean(q?.isDupe),
+          qsoNumber,
+          points: Number.isFinite(pointsRaw) ? pointsRaw : 0
+        };
+      })
+      .filter((item) => Number.isFinite(item.ts) && !item.isDupe)
+      .sort((a, b) => a.ts - b.ts);
+    let best = { points: 0, startTs: null, endTs: null, startQso: null, endQso: null };
+    let sum = 0;
+    let j = 0;
+    for (let i = 0; i < data.length; i += 1) {
+      sum += data[i].points;
+      while (data[i].ts - data[j].ts >= windowMs) {
+        sum -= data[j].points;
+        j += 1;
+      }
+      if (sum > best.points) {
+        best = {
+          points: sum,
+          startTs: data[j].ts,
+          endTs: data[i].ts,
+          startQso: data[j].qsoNumber,
+          endQso: data[i].qsoNumber
+        };
+      }
+    }
+    return best;
+  }
+
+  function buildRatesOperatorSummary(derived, qsos) {
+    if (!derived?.hasPerQsoOperator) return [];
+    const opBuckets = new Map();
+    const windows = [10, 20, 30, 60, 120];
+    const qsoList = Array.isArray(qsos) ? qsos : [];
+    if (!qsoList.length) return [];
+    qsoList.forEach((q) => {
+      if (!Number.isFinite(q?.ts) || q?.isDupe) return;
+      const op = String(q?.op || '').trim().toUpperCase();
+      if (!op) return;
+      if (!opBuckets.has(op)) opBuckets.set(op, []);
+      opBuckets.get(op).push(q);
+    });
+    if (!opBuckets.size) return [];
+    const pointsByIndex = getEffectivePointsByIndex(derived, qsoList);
+    const pointsByQso = new Map();
+    qsoList.forEach((q, idx) => {
+      if (!q?.qsoNumber) return;
+      const rawPoints = Number.isFinite(pointsByIndex[idx]) ? pointsByIndex[idx] : Number(q.points);
+      pointsByQso.set(q.qsoNumber, Number.isFinite(rawPoints) ? rawPoints : 0);
+    });
+
+    const summaries = Array.from(opBuckets.entries()).map(([op, opQsos]) => {
+      let bestQso = { count: 0, perMin: 0, perHour: 0, window: 0, startTs: null, endTs: null };
+      for (const window of windows) {
+        const peak = computePeakWindow(opQsos, window);
+        const perMin = peak.count ? peak.count / window : 0;
+        const perHour = peak.count ? (peak.count * 60) / window : 0;
+        if (perHour > bestQso.perHour || (perHour === bestQso.perHour && peak.count > bestQso.count)) {
+          bestQso = {
+            count: peak.count,
+            perMin,
+            perHour,
+            window,
+            startTs: peak.startTs,
+            endTs: peak.endTs,
+            startQso: peak.startQso,
+            endQso: peak.endQso
+          };
+        }
+      }
+      let bestPoints = { points: null, perMin: null, perHour: null, window: null, startTs: null, endTs: null };
+      for (const window of windows) {
+        const peak = computePeakPointsWindowFromQsos(opQsos, pointsByQso, window);
+        const perMin = peak.points ? peak.points / window : 0;
+        const perHour = peak.points ? (peak.points * 60) / window : 0;
+        if (bestPoints.points === null || perHour > bestPoints.perHour) {
+          bestPoints = {
+            points: peak.points,
+            perMin,
+            perHour,
+            window,
+            startTs: peak.startTs,
+            endTs: peak.endTs,
+            startQso: peak.startQso,
+            endQso: peak.endQso
+          };
+        }
+      }
+      return {
+        op,
+        bestQso,
+        bestPoints
+      };
+    });
+    return summaries.sort((a, b) => a.op.localeCompare(b.op));
+  }
+
+  function renderRatesOperatorSummary(derived, qsos) {
+    const items = buildRatesOperatorSummary(derived, qsos);
+    if (!items.length) return '';
+    const rows = items.map((item, idx) => {
+      const qsoWindow = Number.isFinite(item.bestQso?.window) ? `${item.bestQso.window}` : 'N/A';
+      const qsoCount = Number.isFinite(item.bestQso?.count) ? formatNumberSh6(item.bestQso.count) : 'N/A';
+      const qsoPerMin = Number.isFinite(item.bestQso?.perMin) ? item.bestQso.perMin.toFixed(1) : 'N/A';
+      const qsoPerHour = Number.isFinite(item.bestQso?.perHour) ? formatNumberSh6(Math.round(item.bestQso.perHour)) : 'N/A';
+      const bestPoints = item.bestPoints || {};
+      const pointsWindow = Number.isFinite(bestPoints.window) ? `${bestPoints.window}` : 'N/A';
+      const points = Number.isFinite(bestPoints.points) ? formatPointValue(bestPoints.points) : 'N/A';
+      const pointsPerMin = Number.isFinite(bestPoints.perMin) ? bestPoints.perMin.toFixed(1) : 'N/A';
+      const pointsPerHour = Number.isFinite(bestPoints.perHour) ? bestPoints.perHour.toFixed(1) : 'N/A';
+      const cls = idx % 2 === 0 ? 'td1' : 'td0';
+      return `
+        <div class="rates-row ${cls}">
+          <div class="rates-cell"><b>${escapeHtml(item.op)}</b></div>
+          <div class="rates-cell">${qsoWindow}</div>
+          <div class="rates-cell">${qsoCount}</div>
+          <div class="rates-cell">${qsoPerMin}</div>
+          <div class="rates-cell">${qsoPerHour}</div>
+          <div class="rates-cell">${pointsWindow}</div>
+          <div class="rates-cell">${points}</div>
+          <div class="rates-cell">${pointsPerMin}</div>
+          <div class="rates-cell">${pointsPerHour}</div>
+        </div>
+      `;
+    }).join('');
+    return `
+      <h3>Per-operator rates</h3>
+      <div class="rates-grid rates-grid-points">
+        <div class="rates-header thc">
+          <div class="rates-cell">Operator</div>
+          <div class="rates-cell">Best QSO window (min)</div>
+          <div class="rates-cell">Best QSOs</div>
+          <div class="rates-cell">Best QSOs/min</div>
+          <div class="rates-cell">Best QSOs/hr</div>
+          <div class="rates-cell">Best points window (min)</div>
+          <div class="rates-cell">Best points</div>
+          <div class="rates-cell">Best points/min</div>
+          <div class="rates-cell">Best points/hr</div>
+        </div>
+        ${rows}
+      </div>
+    `;
+  }
+
   function renderRates() {
     if (!state.derived) return renderPlaceholder({ id: 'rates', title: 'Rates' });
     const qsos = state.qsoData?.qsos || [];
+    const operatorRatesSummary = renderRatesOperatorSummary(state.derived, qsos);
     return `
       <div class="gradient">&nbsp;QSO rates</div>
       ${renderQsoRatesForData(qsos)}
+      ${operatorRatesSummary}
       <div class="gradient rates-subhead">&nbsp;Point rates</div>
       ${renderPointsRatesForData(state.derived, qsos)}
     `;
@@ -13289,7 +13445,7 @@
     const slots = getActiveCompareSnapshots();
     const htmlBlocks = slots.map((entry) => (
       entry.ready
-        ? renderPointsRatesForData(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || [])
+        ? `${renderRatesOperatorSummary(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || [])}${renderPointsRatesForData(entry.snapshot.derived, entry.snapshot.qsoData?.qsos || [])}`
         : `<p>No ${entry.label} loaded.</p>`
     ));
     return renderComparePanels(slots, htmlBlocks, 'points_rates');
