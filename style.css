@@ -4084,10 +4084,20 @@ table.mtc.countries-month-heatmap-table {
   text-align: center;
 }
 
+.rates-grid-operators .rates-header,
+.rates-grid-operators .rates-row {
+  grid-template-columns: 90px 100px 95px 95px 95px 110px 95px 95px 95px;
+}
+
 @media (max-width: 980px) {
   .rates-header,
   .rates-row {
     grid-template-columns: 70px 80px 90px 90px 1fr 70px 1fr 70px;
+  }
+
+  .rates-grid-operators .rates-header,
+  .rates-grid-operators .rates-row {
+    grid-template-columns: 72px 82px 74px 74px 74px 95px 90px 90px 90px;
   }
 }
 
@@ -4117,6 +4127,16 @@ table.mtc.countries-month-heatmap-table {
   .rates-row .rates-cell:nth-child(6)::before { content: "From (QSO #)"; }
   .rates-row .rates-cell:nth-child(7)::before { content: "To (time)"; }
   .rates-row .rates-cell:nth-child(8)::before { content: "To (QSO #)"; }
+
+  .rates-grid-operators .rates-row .rates-cell:nth-child(1)::before { content: "Operator"; }
+  .rates-grid-operators .rates-row .rates-cell:nth-child(2)::before { content: "Best QSO min"; }
+  .rates-grid-operators .rates-row .rates-cell:nth-child(3)::before { content: "Best QSOs"; }
+  .rates-grid-operators .rates-row .rates-cell:nth-child(4)::before { content: "Best QSO/min"; }
+  .rates-grid-operators .rates-row .rates-cell:nth-child(5)::before { content: "Best QSO/hr"; }
+  .rates-grid-operators .rates-row .rates-cell:nth-child(6)::before { content: "Best pts min"; }
+  .rates-grid-operators .rates-row .rates-cell:nth-child(7)::before { content: "Best points"; }
+  .rates-grid-operators .rates-row .rates-cell:nth-child(8)::before { content: "Best pts/min"; }
+  .rates-grid-operators .rates-row .rates-cell:nth-child(9)::before { content: "Best pts/hr"; }
 }
 
 @media (max-width: 900px) {

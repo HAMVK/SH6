@@ -13116,17 +13116,17 @@
     }).join('');
     return `
       <h3>Per-operator rates</h3>
-      <div class="rates-grid rates-grid-points">
+      <div class="rates-grid rates-grid-operators">
         <div class="rates-header thc">
           <div class="rates-cell">Operator</div>
-          <div class="rates-cell">Best QSO window (min)</div>
+          <div class="rates-cell">Best QSO min</div>
           <div class="rates-cell">Best QSOs</div>
-          <div class="rates-cell">Best QSOs/min</div>
-          <div class="rates-cell">Best QSOs/hr</div>
-          <div class="rates-cell">Best points window (min)</div>
+          <div class="rates-cell">Best QSO/min</div>
+          <div class="rates-cell">Best QSO/hr</div>
+          <div class="rates-cell">Best pts min</div>
           <div class="rates-cell">Best points</div>
-          <div class="rates-cell">Best points/min</div>
-          <div class="rates-cell">Best points/hr</div>
+          <div class="rates-cell">Best pts/min</div>
+          <div class="rates-cell">Best pts/hr</div>
         </div>
         ${rows}
       </div>
