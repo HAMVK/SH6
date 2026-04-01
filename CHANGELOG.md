@@ -8,6 +8,11 @@ Milestone-style history for SH6, based on reviewing diffs between version bump c
 - Report landing: keep the existing final jump to `Log` unchanged; this release only removes visible restore flicker and intermediate refresh churn.
 - Version bump to `v6.2.27` and refresh cache-busting references in `main.js`.
 
+## v6.2.28 (2026-04-01)
+- Break time report: add per-operator break-time overview when `OPERATOR` is present per QSO (ADIF/CABRILLO/CBF fallback), showing Participation, break time, break count, and ON AIR.
+- Data handling: avoid showing per-operator break summaries when operator is not known per QSO, so single-operator inferred logs stay clean.
+- Version bump to `v6.2.28` and refresh cache-busting references in `index.html`, `main.js`.
+
 ## v6.2.26 (2026-03-28)
 - Permalink restore: when a saved session points to local logs, SH6 now prompts per slot with `Upload log` or `Continue without log` instead of only showing a passive notice and leaving the slot empty without a clear next step.
 - Prompt flow: queue local-log prompts one at a time during permalink restore, route `Upload log` into the existing slot-specific upload picker, and allow `Esc`/backdrop dismiss to continue without attaching the log.

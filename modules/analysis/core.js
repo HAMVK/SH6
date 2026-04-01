@@ -3107,6 +3107,9 @@
     const headingSummary = makeHeadingSummary();
     const headingByHour = new Map();
     const freqBins = new Map();
+    const operatorMinuteBuckets = new Map();
+    const operatorTimeRanges = new Map();
+    let hasPerQsoOperator = false;
     const possibleErrors = [];
     const comments = new Set();
     const fields = new Map();
@@ -3247,6 +3250,24 @@
         const minuteBucket = Math.floor(q.ts / 60000);
         if (!minutes.has(minuteBucket)) minutes.set(minuteBucket, { qsos: 0 });
         minutes.get(minuteBucket).qsos += 1;
+
+        const op = normalizeCall(q.op);
+        const explicitOp = normalizeCall(q.raw?.OPERATOR);
+        if (explicitOp) {
+          hasPerQsoOperator = true;
+        }
+        if (op) {
+          if (!operatorMinuteBuckets.has(op)) operatorMinuteBuckets.set(op, new Map());
+          const opMinutes = operatorMinuteBuckets.get(op);
+          if (!opMinutes.has(minuteBucket)) opMinutes.set(minuteBucket, 0);
+          opMinutes.set(minuteBucket, opMinutes.get(minuteBucket) + 1);
+          if (!operatorTimeRanges.has(op)) operatorTimeRanges.set(op, { minTs: q.ts, maxTs: q.ts });
+          else {
+            const opRange = operatorTimeRanges.get(op);
+            if (Number.isFinite(q.ts) && q.ts < opRange.minTs) opRange.minTs = q.ts;
+            if (Number.isFinite(q.ts) && q.ts > opRange.maxTs) opRange.maxTs = q.ts;
+          }
+        }
 
         const tenBucket = Math.floor(q.ts / (60000 * 10));
         if (!tenMinutes.has(tenBucket)) tenMinutes.set(tenBucket, { qsos: 0 });
@@ -3652,9 +3673,19 @@
       headingByHourSeries,
       frequencySummary,
       fieldsSummary,
+      operatorBreakData: Array.from(operatorMinuteBuckets.entries()).map(([op, minuteBuckets]) => {
+        const range = operatorTimeRanges.get(op) || {};
+        return {
+          op,
+          minutes: Array.from(minuteBuckets.keys()).sort((a, b) => a - b),
+          minTs: Number.isFinite(range.minTs) ? range.minTs : null,
+          maxTs: Number.isFinite(range.maxTs) ? range.maxTs : null
+        };
+      }),
       station,
       contestMeta,
       scoring,
+      hasPerQsoOperator,
       comments: Array.from(comments),
       possibleErrors,
       timeRange: { minTs, maxTs },
