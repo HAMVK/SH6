@@ -2,6 +2,11 @@
 
 Milestone-style history for SH6, based on reviewing diffs between version bump commits.
 
+## v6.2.30 (2026-04-09)
+- Archive source: switch archive metadata and log fetches to raw GitHub logs repo:
+  `https://raw.githubusercontent.com/s53zo/Hamradio-Contest-logs-Archives/main`.
+- Version bump to `v6.2.30` and refresh cache-busting references in `index.html`, `main.js`.
+
 ## v6.2.29 (2026-04-01)
 - Rates report: add per-operator rates overview when OPERATOR is present per QSO, reporting best QSO and point windows for each operator.
 - Per-operator rates gating: only show this section when per-QSO operator data exists to avoid noise in single-operator inferred logs.
