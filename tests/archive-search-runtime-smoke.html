@@ -82,7 +82,7 @@
           import('../modules/archive/search-runtime.js')
         ]);
 
-        add('Main.js imports the archive search runtime module', mainSource.includes("const ARCHIVE_SEARCH_RUNTIME_MODULE_URL = './modules/archive/search-runtime.js?v=6.2.21';"));
+        add('Main.js imports the archive search runtime module', /const ARCHIVE_SEARCH_RUNTIME_MODULE_URL = '\.\/modules\/archive\/search-runtime\.js\?v=[^']+';/.test(mainSource));
         add('Main.js loads archive search runtime before setupRepoSearch calls', mainSource.includes('const archiveSearchRuntimeReady = loadArchiveSearchRuntimeModule();') && mainSource.includes('await archiveSearchRuntimeReady;'));
         add('Main.js delegates setupRepoSearch to the archive search runtime', mainSource.includes('return getArchiveSearchRuntime().setupRepoSearch(slotId);'));
         add('Archive search runtime exports the factory', moduleSource.includes('export function createArchiveSearchRuntime'));
@@ -110,6 +110,7 @@
         const fakeRows = [
           { path: 'ARRL/DX/2024/PH/S53M.log', contest: 'ARRL', year: 2024, mode: 'PH', season: '', subcontest: 'DX' },
           { path: 'CQWW/cw/2025/S53M.log', contest: 'CQWW', year: 2025, mode: 'CW', season: '' },
+          { path: 'OK1WC_Memorial/2026-03-02/S53M.log', contest: 'OK1WC_Memorial', year: 2026, mode: '', season: 'Spring' },
           { path: 'RECONSTRUCTED_LOGS/CQWW/cw/2023/S53M.log', contest: 'CQWW', year: 2023, mode: 'CW', season: '' }
         ];
 
@@ -170,6 +171,13 @@
             && dom.resultsEl.textContent.includes('CQWW')
             && dom.resultsEl.textContent.includes('ARRL')
             && dom.resultsEl.textContent.includes('reconstructed log'),
+          dom.resultsEl.textContent.replace(/\s+/g, ' ').trim()
+        );
+        add(
+          'Weekly archive contests render by round date instead of season',
+          dom.resultsEl.textContent.includes('OK1WC_Memorial')
+            && dom.resultsEl.textContent.includes('2026-03-02')
+            && !dom.resultsEl.textContent.includes('Spring'),
           dom.resultsEl.textContent.replace(/\s+/g, ' ').trim()
         );
         add(

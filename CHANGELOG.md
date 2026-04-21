@@ -2,6 +2,11 @@
 
 Milestone-style history for SH6, based on reviewing diffs between version bump commits.
 
+## v6.2.31 (2026-04-21)
+- Archive search: render `OK1WC_Memorial` entries by weekly round date from the archive path instead of grouping them under generic seasons.
+- Archive smoke: cover weekly-round archive grouping so seasonal shard metadata does not leak into the tree for weekly events.
+- Version bump to `v6.2.31` and refresh cache-busting references in `index.html`, `main.js`.
+
 ## v6.2.30 (2026-04-09)
 - Archive source: switch archive metadata and log fetches to raw GitHub logs repo:
   `https://raw.githubusercontent.com/s53zo/Hamradio-Contest-logs-Archives/main`.

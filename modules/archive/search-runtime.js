@@ -65,6 +65,17 @@ export function createArchiveSearchRuntime(deps = {}) {
     return parts[parts.length - 1] || '';
   }
 
+  function getArchiveRoundDate(row) {
+    const path = normalizeLabel(row?.path);
+    const match = path.match(/(?:^|\/)(\d{4}-\d{2}-\d{2})(?:\/|$)/);
+    return match ? match[1] : '';
+  }
+
+  function isArchiveWeeklyRoundContest(contest) {
+    const key = normalizeLabel(contest).toUpperCase();
+    return key.startsWith('WEDNESDAYMINITEST') || key === 'OK1WC_MEMORIAL';
+  }
+
   function parseIsoWeek(dateStr) {
     const [y, m, d] = String(dateStr || '').split('-').map((value) => parseInt(value, 10));
     if (!y || !m || !d) return null;
@@ -82,13 +93,13 @@ export function createArchiveSearchRuntime(deps = {}) {
     const contest = normalizeLabel(row?.contest);
     const path = normalizeLabel(row?.path);
     if (!contest || !path) return [normalizeLabel(row?.mode), normalizeLabel(row?.season)].filter(Boolean).join(' • ');
-    if (contest.startsWith('WednesdayMiniTest')) {
-      const match = path.match(/\d{4}-\d{2}-\d{2}/);
-      if (match) {
-        const iso = parseIsoWeek(match[0]);
+    if (isArchiveWeeklyRoundContest(contest)) {
+      const roundDate = getArchiveRoundDate(row);
+      if (contest.startsWith('WednesdayMiniTest') && roundDate) {
+        const iso = parseIsoWeek(roundDate);
         if (iso) return `Week ${iso.year}-W${String(iso.week).padStart(2, '0')}`;
       }
-      return 'Week';
+      return roundDate || 'Weekly round';
     }
     if (contest === 'EU_VHF_CONTESTS') {
       const parts = path.split('/').filter(Boolean);
@@ -121,6 +132,11 @@ export function createArchiveSearchRuntime(deps = {}) {
         const modeCmp = compareArchiveModes(a?.mode, b?.mode);
         if (modeCmp !== 0) return modeCmp;
         return normalizeLabel(getArchiveLeafName(a?.path)).localeCompare(normalizeLabel(getArchiveLeafName(b?.path)));
+      }
+      if (isArchiveWeeklyRoundContest(contestA)) {
+        const roundA = getArchiveRoundDate(a);
+        const roundB = getArchiveRoundDate(b);
+        if (roundA !== roundB) return roundB.localeCompare(roundA);
       }
       const modeA = normalizeLabel(a?.mode).toUpperCase();
       const modeB = normalizeLabel(b?.mode).toUpperCase();
